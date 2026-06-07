@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm start *)",
+      "Bash(npm run *)",
+      "Bash(cd /tmp)",
+      "Bash(curl -s -o si.mp3 -w \"HTTP:%{http_code} type:%{content_type} bytes:%{size_download}\\\\n\" -A \"Mozilla/5.0\" \"https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=si&q=%E0%B6%86%E0%B6%BA%E0%B7%94%E0%B6%B6%E0%B7%9D%E0%B7%80%E0%B6%B1%E0%B7%8A\")",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+# Render Blueprint — one free web service that builds the React frontend
+# and runs the Express backend (which serves both the API and the frontend).
+#
+# After pushing this repo to GitHub:
+#   Render Dashboard → New → Blueprint → pick this repo → Apply.
+# Then set the secret env vars (OPENAI_API_KEY) in the dashboard.
+services:
+  - type: web
+    name: marknex
+    runtime: node
+    plan: free
+    # Install frontend deps, build it, then install backend deps.
+    buildCommand: cd frontend && npm install && npm run build && cd ../backend && npm install
+    # Start the Express server (it serves /api and the built frontend).
+    startCommand: cd backend && node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # JWT signing secret — Render generates a strong random value for you.
+      - key: JWT_SECRET
+        generateValue: true
+      # Your OpenAI key — set this in the Render dashboard (marked sync:false so
+      # it is NOT stored in the repo).
+      - key: OPENAI_API_KEY
+        sync: false

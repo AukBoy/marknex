@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.local
+
+# Logs
+*.log
+
+# SQLite database (incl. WAL/SHM sidecars) & uploaded files (runtime data)
+backend/marknex.db
+backend/marknex.db-wal
+backend/marknex.db-shm
+backend/uploads/
+
+# Scratch / debug output
+backend/out.json
+backend/out.txt
+backend/db_dump.json
+
+# Build output
+frontend/dist/
+frontend/node_modules/.vite/
+
+# Local dev tooling
+.claude/launch.json
+
+# Unrelated sub-project — not part of the deploy
+youtube-channel-switcher/

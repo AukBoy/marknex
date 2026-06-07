@@ -1,0 +1,704 @@
+/* ─────────────────────────────────────────────────────────────
+   PaperGenerator.css — exam paper builder
+   ───────────────────────────────────────────────────────────── */
+
+/* ── Outer layout ─────────────────────────────────────────────── */
+.pg-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0 2rem 2rem;
+    overflow-y: auto;
+}
+
+.pg-header {
+    margin-bottom: 1.25rem;
+}
+
+.pg-header h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.pg-header p {
+    margin: 0;
+    color: var(--text-muted);
+}
+
+/* ── Main tabs ───────────────────────────────────────────────── */
+.pg-tabs {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 1.75rem;
+    overflow-x: auto;
+}
+
+.pg-tab {
+    padding: 0.7rem 1.25rem;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.92rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    white-space: nowrap;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    border-radius: 6px 6px 0 0;
+    transition: all 0.2s ease;
+}
+
+.pg-tab:hover  { color: var(--primary); background: rgba(79, 70, 229, 0.05); }
+.pg-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+/* ── Create layout (two columns) ─────────────────────────────── */
+.pg-create {
+    flex: 1;
+}
+
+.pg-two-col {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 1.75rem;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .pg-two-col {
+        grid-template-columns: 1fr;
+    }
+    .pg-tips {
+        display: none;
+    }
+}
+
+/* ── Cards ───────────────────────────────────────────────────── */
+.pg-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+}
+
+.pg-card h3 {
+    margin: 0 0 1rem;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-main);
+}
+
+/* ── Fields ──────────────────────────────────────────────────── */
+.pg-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.pg-label {
+    display: block;
+    font-size: 0.83rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.pg-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.pg-form-grid-3 {
+    grid-template-columns: 1fr 1fr 1fr;
+}
+
+@media (max-width: 600px) {
+    .pg-form-grid,
+    .pg-form-grid-3 { grid-template-columns: 1fr; }
+    .pg-form-grid-3 .pg-field[style] { grid-column: span 1 !important; }
+}
+
+/* ── Language note ───────────────────────────────────────────── */
+.pg-lang-note {
+    margin-top: 0.85rem;
+    padding: 0.65rem 0.9rem;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    border-radius: 8px;
+    font-size: 0.88rem;
+    color: #059669;
+}
+
+/* ── Topic chips ─────────────────────────────────────────────── */
+.pg-topics {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+
+.pg-topic-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.5rem;
+}
+
+.pg-chip {
+    padding: 0.3rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.83rem;
+    font-weight: 500;
+    border: 1.5px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+
+.pg-chip:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.pg-chip.selected {
+    background: rgba(79, 70, 229, 0.12);
+    border-color: var(--primary);
+    color: var(--primary);
+    font-weight: 600;
+}
+
+/* ── Section rows ────────────────────────────────────────────── */
+.pg-section-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 0.75rem;
+}
+
+.pg-section-badge {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-bottom: 0.1rem;
+}
+
+.pg-section-fields {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1.5fr;
+    gap: 0.75rem;
+    flex: 1;
+}
+
+@media (max-width: 700px) {
+    .pg-section-fields { grid-template-columns: 1fr 1fr; }
+}
+
+.pg-remove {
+    margin-bottom: 0.2rem;
+    color: var(--text-muted) !important;
+}
+
+.pg-remove:hover { color: var(--danger) !important; }
+
+/* ── Total marks banner ──────────────────────────────────────── */
+.pg-total-marks {
+    text-align: right;
+    font-size: 0.92rem;
+    color: var(--text-muted);
+    margin-top: 0.75rem;
+}
+
+.pg-total-marks strong {
+    color: var(--primary);
+    font-size: 1.1rem;
+}
+
+/* ── Generate status / error banners ────────────────────────── */
+.pg-gen-status {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.85rem 1rem;
+    background: rgba(79, 70, 229, 0.08);
+    border: 1px solid rgba(79, 70, 229, 0.25);
+    border-radius: 10px;
+    color: var(--primary);
+    font-size: 0.93rem;
+    font-weight: 500;
+    margin-bottom: 0.75rem;
+}
+
+.pg-gen-error {
+    padding: 0.85rem 1rem;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 10px;
+    color: #dc2626;
+    font-size: 0.92rem;
+    font-weight: 500;
+    margin-bottom: 0.75rem;
+    line-height: 1.5;
+}
+
+/* ── Generate button ─────────────────────────────────────────── */
+.pg-generate-btn {
+    width: 100%;
+    padding: 0.85rem;
+    font-size: 1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 12px;
+}
+
+/* ── Tips sidebar ────────────────────────────────────────────── */
+.pg-tips {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.25rem;
+    position: sticky;
+    top: 1rem;
+}
+
+.pg-tips h4 {
+    margin: 0 0 0.75rem;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.pg-tips ul {
+    margin: 0;
+    padding-left: 1.1rem;
+}
+
+.pg-tips li {
+    font-size: 0.86rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-bottom: 0.4rem;
+}
+
+/* ── Question type list (tips sidebar) ───────────────────────── */
+.pg-type-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.pg-type-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    font-size: 0.86rem;
+}
+
+.pg-type-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: rgba(79, 70, 229, 0.1);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+
+.pg-type-item strong {
+    display: block;
+    font-size: 0.87rem;
+    color: var(--text-main);
+    margin-bottom: 0.1rem;
+}
+
+.pg-type-item small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* ── Empty / placeholder ─────────────────────────────────────── */
+.pg-empty {
+    color: var(--text-muted);
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+.pg-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 4rem 2rem;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+/* ── Saved papers list ───────────────────────────────────────── */
+.pg-paper-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.pg-paper-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    gap: 1rem;
+    transition: box-shadow 0.2s;
+}
+
+.pg-paper-row:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+
+.pg-paper-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.pg-paper-info strong {
+    display: block;
+    font-size: 0.97rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pg-paper-info small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.83rem;
+    margin-top: 0.2rem;
+}
+
+/* ── Preview controls ────────────────────────────────────────── */
+.pg-preview-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.pg-preview-controls {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.active-btn {
+    background: rgba(79, 70, 229, 0.12) !important;
+    color: var(--primary) !important;
+    border-color: var(--primary) !important;
+}
+
+/* ── Paper document ──────────────────────────────────────────── */
+.pg-paper {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+}
+
+.paper-doc {
+    padding: 2.5rem 3rem;
+    font-family: 'Georgia', serif;
+    color: #111;
+    line-height: 1.65;
+    min-height: 297mm;
+}
+
+/* paper header */
+.paper-header {
+    text-align: center;
+    padding-bottom: 1.25rem;
+    margin-bottom: 1.25rem;
+    border-bottom: 2.5px solid #111;
+}
+
+.paper-header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0 0 0.4rem;
+    letter-spacing: 0.01em;
+}
+
+.paper-meta {
+    font-size: 0.92rem;
+    color: #444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.paper-instructions {
+    background: #f5f5f5;
+    border-left: 4px solid #111;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.93rem;
+    color: #333;
+    border-radius: 0 6px 6px 0;
+}
+
+/* section */
+.paper-section {
+    margin-bottom: 2.5rem;
+}
+
+.paper-section-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    border-bottom: 1.5px solid #888;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+}
+
+.paper-section-marks {
+    font-size: 0.85rem;
+    font-weight: 400;
+    color: #555;
+    text-transform: none;
+}
+
+.paper-section-instructions {
+    color: #555;
+    font-style: italic;
+    font-size: 0.92rem;
+    margin: 0 0 0.85rem;
+}
+
+/* questions */
+.paper-questions {
+    margin: 0;
+    padding-left: 1.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+}
+
+.paper-question {
+    font-size: 0.97rem;
+}
+
+.paper-q-text {
+    font-weight: 500;
+    margin-bottom: 0.4rem;
+}
+
+.paper-q-marks {
+    font-weight: 400;
+    color: #666;
+    font-size: 0.88rem;
+    margin-left: 0.4rem;
+}
+
+.paper-blank {
+    border-bottom: 1.5px solid #333;
+    display: inline-block;
+    min-width: 80px;
+    margin-left: 0.25rem;
+}
+
+/* MCQ options */
+.paper-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.4rem;
+    padding-left: 0.5rem;
+}
+
+.paper-option {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    font-size: 0.93rem;
+}
+
+.paper-option-bubble {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #555;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+}
+
+/* answer lines */
+.paper-answer-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 0.4rem;
+    padding-left: 0.5rem;
+}
+
+.paper-line {
+    border-bottom: 1px solid #bbb;
+    height: 28px;
+}
+
+.essay-lines .paper-line {
+    height: 32px;
+}
+
+/* answer key overlay */
+.paper-answer-key {
+    margin-top: 0.35rem;
+    padding: 0.35rem 0.75rem;
+    background: rgba(16, 185, 129, 0.1);
+    border-left: 3px solid #10b981;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.88rem;
+    color: #059669;
+    font-weight: 600;
+    font-family: inherit;
+}
+
+.answer-topic {
+    font-weight: 400;
+    color: #6b7280;
+    font-size: 0.82rem;
+}
+
+/* answer key full page */
+.paper-answer-page {
+    margin-top: 3rem;
+    padding-top: 2rem;
+    border-top: 2.5px dashed #666;
+}
+
+.paper-answer-page h2 {
+    text-align: center;
+    font-size: 1.2rem;
+    margin-bottom: 1.5rem;
+    letter-spacing: 0.05em;
+    color: #333;
+}
+
+.answer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 0.4rem;
+}
+
+.answer-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+    font-size: 0.88rem;
+}
+
+.answer-q-num {
+    font-weight: 700;
+    color: #374151;
+    min-width: 36px;
+    font-family: monospace;
+}
+
+.answer-val {
+    flex: 1;
+    color: #059669;
+    font-weight: 600;
+}
+
+.answer-marks {
+    color: #9ca3af;
+    font-size: 0.8rem;
+}
+
+/* ── Print styles ────────────────────────────────────────────── */
+@media print {
+    .pg-container,
+    .pg-tabs,
+    .pg-preview-controls,
+    .pg-header {
+        display: none !important;
+    }
+
+    #printable-paper {
+        display: block !important;
+        border: none !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+    }
+
+    .paper-doc {
+        padding: 1.5cm 2cm;
+    }
+
+    .paper-answer-key {
+        display: none; /* hide inline overlay when printing student copy */
+    }
+
+    .paper-answer-page {
+        page-break-before: always;
+    }
+
+    body * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}
+
+/* ── Dark-mode adjustments ───────────────────────────────────── */
+[data-theme="dark"] .paper-doc {
+    color: #f1f5f9;
+    background: #1e293b;
+}
+
+[data-theme="dark"] .paper-header     { border-color: #f1f5f9; }
+[data-theme="dark"] .paper-header h1  { color: #f1f5f9; }
+[data-theme="dark"] .paper-meta       { color: #94a3b8; }
+[data-theme="dark"] .paper-instructions { background: #1e293b; border-color: #94a3b8; color: #cbd5e1; }
+[data-theme="dark"] .paper-section-title { border-color: #94a3b8; }
+[data-theme="dark"] .paper-option-bubble { border-color: #94a3b8; }
+[data-theme="dark"] .paper-line        { border-color: #475569; }
+[data-theme="dark"] .answer-row        { background: #1e293b; border-color: #334155; }
+[data-theme="dark"] .answer-q-num      { color: #e2e8f0; }
+[data-theme="dark"] .pg-paper          { background: #1e293b; }

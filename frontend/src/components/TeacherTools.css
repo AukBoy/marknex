@@ -1,0 +1,552 @@
+/* ── TeacherTools.css ────────────────────────────────────────── */
+
+.tt-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0 2rem 2rem;
+    overflow-y: auto;
+}
+
+.tt-header { margin-bottom: 1.25rem; }
+.tt-header h2 { margin: 0 0 0.2rem; font-size: 1.9rem; }
+.tt-header p  { margin: 0; color: var(--text-muted); }
+
+/* ── Main tabs ──────────────────────────────────────────────── */
+.tt-tabs {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 1.75rem;
+    overflow-x: auto;
+}
+
+.tt-tab {
+    padding: 0.7rem 1.25rem;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.92rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    white-space: nowrap;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    border-radius: 6px 6px 0 0;
+    transition: all 0.2s;
+}
+.tt-tab:hover  { color: var(--primary); background: rgba(79,70,229,0.05); }
+.tt-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+/* ── Sub tabs ───────────────────────────────────────────────── */
+.tt-sub-tabs {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+.tt-sub-tab {
+    padding: 0.45rem 0.9rem;
+    border: 1.5px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: all 0.18s;
+}
+.tt-sub-tab:hover  { border-color: var(--primary); color: var(--primary); }
+.tt-sub-tab.active { background: rgba(79,70,229,0.1); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+
+/* ── Body ───────────────────────────────────────────────────── */
+.tt-body { flex: 1; }
+
+.tt-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.tt-section-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+}
+
+.tt-select { min-width: 220px; }
+.tt-sm { font-size: 0.83rem !important; padding: 0.4rem 0.75rem !important; }
+
+.tt-empty {
+    color: var(--text-muted);
+    padding: 3rem 1rem;
+    text-align: center;
+    font-size: 0.95rem;
+}
+
+.tt-error {
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 8px;
+    color: #dc2626;
+    padding: 0.7rem 1rem;
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+}
+
+/* ── Attendance ─────────────────────────────────────────────── */
+.tt-att-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.tt-stats {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+}
+
+.tt-stat {
+    padding: 0.3rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+.tt-stat.present { background: rgba(16,185,129,0.12); color: #059669; }
+.tt-stat.absent  { background: rgba(239,68,68,0.12);  color: #dc2626; }
+.tt-stat.late    { background: rgba(245,158,11,0.12); color: #d97706; }
+
+.tt-student-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 60vh;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+
+.tt-student-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    transition: border-color 0.2s;
+}
+.tt-student-row.absent  { border-left: 3px solid #ef4444; }
+.tt-student-row.late    { border-left: 3px solid #f59e0b; }
+.tt-student-row.present { border-left: 3px solid #10b981; }
+.tt-student-row.excused { border-left: 3px solid #6366f1; }
+
+.tt-student-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.tt-student-info {
+    flex: 1;
+    min-width: 0;
+}
+.tt-student-info strong { display: block; font-size: 0.95rem; }
+.tt-student-info small  { color: var(--text-muted); font-size: 0.82rem; }
+
+.tt-status-btns {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.tt-status-btn {
+    padding: 0.3rem 0.65rem;
+    border: 1.5px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    transition: all 0.15s;
+}
+.tt-status-btn:hover { border-color: var(--primary); color: var(--primary); }
+.tt-status-btn.active { font-weight: 600; }
+
+/* ── Attendance report ──────────────────────────────────────── */
+.tt-report-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+.tt-report-controls label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--text-muted); }
+.tt-date-sm { width: 150px; }
+
+.tt-report-table-wrap { overflow-x: auto; }
+
+.tt-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+.tt-table th {
+    background: rgba(79,70,229,0.08);
+    padding: 0.65rem 0.9rem;
+    text-align: left;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+.tt-table td {
+    padding: 0.65rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-main);
+}
+.tt-table tr:last-child td { border-bottom: none; }
+.tt-row-warn { background: rgba(239,68,68,0.04); }
+.tt-td-present { color: #059669; font-weight: 600; }
+.tt-td-absent  { color: #dc2626; font-weight: 600; }
+.tt-td-late    { color: #d97706; font-weight: 600; }
+
+.tt-pct-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.tt-pct-fill {
+    height: 8px;
+    border-radius: 4px;
+    min-width: 4px;
+    transition: width 0.3s;
+}
+
+/* ── Timetable ──────────────────────────────────────────────── */
+.tt-grid-wrapper { overflow-x: auto; }
+
+.tt-grid {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 700px;
+}
+
+.tt-grid th {
+    background: rgba(79,70,229,0.08);
+    padding: 0.65rem 0.75rem;
+    text-align: center;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+
+.tt-grid-period {
+    width: 60px;
+    text-align: center !important;
+    font-weight: 700 !important;
+    font-size: 0.85rem !important;
+    background: rgba(79,70,229,0.05) !important;
+}
+
+.tt-cell {
+    border: 1px solid var(--border);
+    padding: 0.4rem;
+    min-width: 120px;
+    min-height: 72px;
+    cursor: pointer;
+    vertical-align: top;
+    transition: background 0.15s;
+}
+.tt-cell:hover { background: rgba(79,70,229,0.04); }
+
+.tt-slot {
+    border-radius: 8px;
+    padding: 0.5rem 0.6rem;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.tt-slot strong { font-size: 0.88rem; font-weight: 700; }
+.tt-slot small  { font-size: 0.75rem; color: var(--text-muted); display: block; }
+
+.tt-cell-empty {
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--border);
+    transition: color 0.15s;
+}
+.tt-cell:hover .tt-cell-empty { color: var(--primary); }
+
+/* Timetable modal */
+.tt-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.tt-modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+
+.tt-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.tt-modal-body { padding: 1.25rem; }
+.tt-modal-footer {
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+}
+
+.tt-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+.tt-form-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 600px) {
+    .tt-form-grid, .tt-form-grid-3 { grid-template-columns: 1fr; }
+}
+
+.tt-form-field label {
+    display: block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 0.3rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.tt-color-picker { margin-top: 0.75rem; }
+.tt-color-picker label { font-size: 0.82rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 0.4rem; }
+.tt-colors { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.tt-color-btn {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.15s;
+}
+.tt-color-btn:hover { transform: scale(1.15); }
+.tt-color-btn.selected { border-color: var(--text-main); transform: scale(1.15); }
+
+.btn-danger-outline {
+    background: none;
+    border: 1.5px solid #ef4444;
+    color: #ef4444;
+    border-radius: 8px;
+    padding: 0.45rem 0.9rem;
+    cursor: pointer;
+    font-size: 0.88rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: all 0.15s;
+}
+.btn-danger-outline:hover { background: rgba(239,68,68,0.08); }
+
+/* ── Lesson Plans ───────────────────────────────────────────── */
+.tt-plan-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.tt-plan-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    transition: box-shadow 0.2s;
+}
+.tt-plan-row:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.07); }
+
+.tt-plan-info { flex: 1; min-width: 0; }
+.tt-plan-info strong { display: block; font-size: 0.97rem; }
+.tt-plan-info small  { display: block; color: var(--text-muted); font-size: 0.83rem; margin-top: 0.15rem; }
+
+.tt-create-plan { max-width: 700px; }
+
+.tt-plan-view-controls {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.tt-plan-doc {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem 2.5rem;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    font-family: 'Georgia', serif;
+    color: #111;
+}
+
+[data-theme="dark"] .tt-plan-doc { background: #1e293b; color: #f1f5f9; }
+
+.tt-plan-doc-header {
+    text-align: center;
+    border-bottom: 2px solid #111;
+    padding-bottom: 1rem;
+    margin-bottom: 1.25rem;
+}
+[data-theme="dark"] .tt-plan-doc-header { border-color: #f1f5f9; }
+.tt-plan-doc-header h2 { margin: 0 0 0.4rem; font-size: 1.4rem; }
+
+.tt-plan-meta {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.9rem;
+    color: #555;
+    font-family: sans-serif;
+}
+[data-theme="dark"] .tt-plan-meta { color: #94a3b8; }
+
+.tt-plan-block {
+    margin-bottom: 1.25rem;
+}
+.tt-plan-block h4 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    margin: 0 0 0.5rem;
+    font-family: sans-serif;
+}
+.tt-plan-block ul { margin: 0; padding-left: 1.25rem; }
+.tt-plan-block li { font-size: 0.92rem; margin-bottom: 0.3rem; font-family: sans-serif; }
+.tt-plan-block p  { margin: 0; font-size: 0.92rem; font-family: sans-serif; }
+
+.tt-materials { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.tt-material-chip {
+    background: rgba(79,70,229,0.1);
+    color: #4f46e5;
+    padding: 0.2rem 0.6rem;
+    border-radius: 20px;
+    font-size: 0.82rem;
+    font-family: sans-serif;
+    font-weight: 500;
+}
+
+.tt-plan-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    font-family: sans-serif;
+}
+.tt-plan-table th {
+    background: #f3f4f6;
+    padding: 0.55rem 0.75rem;
+    text-align: left;
+    font-size: 0.8rem;
+    border: 1px solid #e5e7eb;
+}
+[data-theme="dark"] .tt-plan-table th { background: #334155; border-color: #475569; }
+.tt-plan-table td {
+    padding: 0.6rem 0.75rem;
+    border: 1px solid #e5e7eb;
+    vertical-align: top;
+}
+[data-theme="dark"] .tt-plan-table td { border-color: #475569; }
+
+.tt-plan-notes {
+    background: rgba(245,158,11,0.08);
+    border-left: 3px solid #f59e0b;
+    border-radius: 0 8px 8px 0;
+    padding: 0.75rem 1rem;
+}
+
+/* ── Notices ────────────────────────────────────────────────── */
+.tt-ai-draft-card {
+    background: rgba(79,70,229,0.05);
+    border: 1px solid rgba(79,70,229,0.2);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+.tt-ai-draft-card h4 {
+    margin: 0 0 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.97rem;
+    color: var(--primary);
+}
+
+.tt-notice-list { display: flex; flex-direction: column; gap: 0.65rem; }
+.tt-notice-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+.tt-notice-info { flex: 1; min-width: 0; }
+.tt-notice-info strong { display: block; font-size: 0.97rem; margin-bottom: 0.15rem; }
+.tt-notice-info small  { color: var(--text-muted); font-size: 0.82rem; }
+.tt-notice-info p      { margin: 0.5rem 0 0; font-size: 0.9rem; color: var(--text-muted); white-space: pre-wrap; }
+
+/* ── Spinner ────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+
+/* ── Print ──────────────────────────────────────────────────── */
+@media print {
+    .tt-tabs, .tt-header, .tt-sub-tabs, .tt-section-controls,
+    .tt-att-controls, .tt-report-controls, .tt-plan-view-controls,
+    .tt-notice-compose .tt-ai-draft-card,
+    .btn, .btn-icon { display: none !important; }
+    .tt-plan-doc, .tt-report-table-wrap { box-shadow: none; border: none; }
+}
