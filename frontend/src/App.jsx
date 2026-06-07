@@ -1,27 +1,40 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { HelpCircle, Moon, Sun, Menu, X } from 'lucide-react';
 import Login from './components/Login';
 import TourGuide from './components/TourGuide';
 import Sidebar from './components/Sidebar';
-import Dashboard from './components/Dashboard';
-import ReviewPanel from './components/ReviewPanel';
-import Report from './components/Report';
-import AnalyticsDashboard from './components/AnalyticsDashboard';
-import ClassReport from './components/ClassReport';
-import Settings from './components/Settings';
-import AssignmentManager from './components/AssignmentManager';
-import MCQGrader from './components/MCQGrader';
-import EssayGrader from './components/EssayGrader';
-import AgreementDashboard from './components/AgreementDashboard';
-import ManagementHub from './components/ManagementHub';
-import PaperGenerator from './components/PaperGenerator';
-import TeacherTools from './components/TeacherTools';
-import StudentPortal from './components/StudentPortal';
-import QuizMaker from './components/QuizMaker';
 import VoiceAssistant from './components/VoiceAssistant';
 import ToastContainer from './components/ToastContainer';
 import KeyboardShortcuts from './components/KeyboardShortcuts';
+
+// Route screens are code-split: each loads its own chunk on demand, so the
+// initial bundle stays small and pages load fast (esp. on mobile / free tier).
+const Dashboard          = lazy(() => import('./components/Dashboard'));
+const ReviewPanel        = lazy(() => import('./components/ReviewPanel'));
+const Report             = lazy(() => import('./components/Report'));
+const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'));
+const ClassReport        = lazy(() => import('./components/ClassReport'));
+const Settings           = lazy(() => import('./components/Settings'));
+const AssignmentManager  = lazy(() => import('./components/AssignmentManager'));
+const MCQGrader          = lazy(() => import('./components/MCQGrader'));
+const EssayGrader        = lazy(() => import('./components/EssayGrader'));
+const AgreementDashboard = lazy(() => import('./components/AgreementDashboard'));
+const ManagementHub      = lazy(() => import('./components/ManagementHub'));
+const PaperGenerator     = lazy(() => import('./components/PaperGenerator'));
+const TeacherTools       = lazy(() => import('./components/TeacherTools'));
+const StudentPortal      = lazy(() => import('./components/StudentPortal'));
+const QuizMaker          = lazy(() => import('./components/QuizMaker'));
+
+// Shown while a route chunk is loading.
+function PageLoader() {
+    return (
+        <div className="page-loader">
+            <div className="spinner" />
+            <span>Loading…</span>
+        </div>
+    );
+}
 import { useDarkMode } from './hooks/useDarkMode';
 import './index.css';
 
@@ -71,7 +84,9 @@ function App() {
   if (isStudent) {
     return (
       <div className="app-container">
-        <StudentPortal onLogout={handleLogout} />
+        <Suspense fallback={<PageLoader />}>
+          <StudentPortal onLogout={handleLogout} />
+        </Suspense>
         <ToastContainer />
       </div>
     );
@@ -121,6 +136,7 @@ function App() {
           {auth && <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />}
           {auth && navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
           <main className="main-content">
+          <Suspense fallback={<PageLoader />}>
           <Routes>
         <Route path="/" element={!auth ? <Login onLogin={handleLogin} /> : <Navigate to="/dashboard" />} />
             <Route path="/dashboard" element={auth ? <Dashboard /> : <Navigate to="/" />} />
@@ -138,6 +154,7 @@ function App() {
             <Route path="/tools" element={auth ? <TeacherTools /> : <Navigate to="/" />} />
             <Route path="/quizzes" element={auth ? <QuizMaker /> : <Navigate to="/" />} />
           </Routes>
+          </Suspense>
           </main>
         </div>
 
