@@ -9,8 +9,9 @@ services:
     name: marknex
     runtime: node
     plan: free
-    # Install frontend deps, build it, then install backend deps.
-    buildCommand: cd frontend && npm install && npm run build && cd ../backend && npm install
+    # Install frontend deps (incl. dev deps like Vite — NODE_ENV=production would
+    # otherwise skip them), build it, then install backend production deps.
+    buildCommand: cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install
     # Start the Express server (it serves /api and the built frontend).
     startCommand: cd backend && node server.js
     envVars:
