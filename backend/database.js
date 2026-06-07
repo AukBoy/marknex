@@ -276,6 +276,22 @@ const db = new sqlite3.Database(dbPath, (err) => {
             db.run(`CREATE INDEX IF NOT EXISTS idx_attempts_quiz ON quiz_attempts(quiz_id)`);
             db.run(`CREATE INDEX IF NOT EXISTS idx_attempts_student ON quiz_attempts(student_id)`);
 
+            // Live quiz scores — persisted when a live game ends, so a lifetime
+            // leaderboard survives forever (one row per student per game).
+            db.run(`CREATE TABLE IF NOT EXISTS live_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                teacher_id INTEGER,
+                student_id INTEGER,
+                quiz_id INTEGER,
+                quiz_title TEXT,
+                score INTEGER,
+                played_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (teacher_id) REFERENCES users(id),
+                FOREIGN KEY (student_id) REFERENCES students(id)
+            )`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_livescores_teacher ON live_scores(teacher_id)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_livescores_student ON live_scores(student_id)`);
+
             // ── Notices (parent communication) ───────────────────────────────
             db.run(`CREATE TABLE IF NOT EXISTS notices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

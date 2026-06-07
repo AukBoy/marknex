@@ -1287,8 +1287,13 @@ async function computeGamification(studentRowId, studentCode, teacherId, classId
         [studentCode, teacherId], (e, rows) => r(rows || [])));
     const quizzes = await new Promise(r => db.all(
         `SELECT score, total FROM quiz_attempts WHERE student_id = ?`, [studentRowId], (e, rows) => r(rows || [])));
+    const live = await new Promise(r => db.get(
+        `SELECT COALESCE(SUM(score),0) AS pts, COUNT(*) AS games FROM live_scores WHERE student_id = ?`,
+        [studentRowId], (e, row) => r(row || { pts: 0, games: 0 })));
 
     let xp = 0;
+    // Live quiz points feed XP at a reduced rate (they're large Kahoot-style numbers).
+    xp += Math.round((live.pts || 0) / 50);
     const scriptPcts = scripts.map(s => s.max_marks ? (s.total_marks / s.max_marks) * 100 : 0);
     const quizPcts   = quizzes.map(q => q.total ? (q.score / q.total) * 100 : 0);
     // 10 XP per paper + bonus for high scores; 8 XP per quiz + bonus.
@@ -1309,8 +1314,13 @@ async function computeGamification(studentRowId, studentCode, teacherId, classId
     add('high_flyer',  '🚀', 'High Flyer', avg >= 80 && allPcts.length >= 3);
     add('dedicated',   '🔥', 'Dedicated', allPcts.length >= 10);
     add('scholar',     '🎓', 'Scholar', level >= 5);
+    add('live_legend', '⚡', 'Live Legend', (live.games || 0) >= 3);
 
-    return { xp, level, xpInLevel, xpToNext: 100, avg: Math.round(avg), papers: scripts.length, quizzes: quizzes.length, badges };
+    return {
+        xp, level, xpInLevel, xpToNext: 100, avg: Math.round(avg),
+        papers: scripts.length, quizzes: quizzes.length,
+        livePoints: live.pts || 0, liveGames: live.games || 0, badges,
+    };
 }
 
 app.get('/api/student/gamification', verifyToken, verifyStudent, async (req, res) => {
@@ -2647,6 +2657,19 @@ function makePin() {
     return pin;
 }
 
+// Persist every player's score to the DB once, when a session ends.
+function persistLiveScores(s) {
+    if (s._saved) return;
+    s._saved = true;
+    const stmt = db.prepare(
+        `INSERT INTO live_scores (teacher_id, student_id, quiz_id, quiz_title, score) VALUES (?, ?, ?, ?, ?)`
+    );
+    for (const [studentId, p] of Object.entries(s.players)) {
+        if (p.score > 0) stmt.run(s.teacherId, studentId, s.quizId, s.title, p.score);
+    }
+    stmt.finalize();
+}
+
 // Teacher: start a live session for one of their quizzes.
 app.post('/api/live/start', verifyToken, (req, res) => {
     const { quiz_id } = req.body;
@@ -2672,7 +2695,7 @@ app.post('/api/live/:pin/next', verifyToken, (req, res) => {
 
     if (s.phase === 'lobby' || s.phase === 'reveal') {
         const next = s.currentQ + 1;
-        if (next >= s.questions.length) { s.phase = 'ended'; }
+        if (next >= s.questions.length) { s.phase = 'ended'; persistLiveScores(s); }
         else { s.currentQ = next; s.phase = 'question'; s.questionStartedAt = Date.now(); }
     } else if (s.phase === 'question') {
         s.phase = 'reveal';
@@ -2682,7 +2705,11 @@ app.post('/api/live/:pin/next', verifyToken, (req, res) => {
 
 app.post('/api/live/:pin/end', verifyToken, (req, res) => {
     const s = liveSessions.get(req.params.pin);
-    if (s && s.teacherId === req.user.id) { s.phase = 'ended'; setTimeout(() => liveSessions.delete(req.params.pin), 60000); }
+    if (s && s.teacherId === req.user.id) {
+        s.phase = 'ended';
+        persistLiveScores(s);
+        setTimeout(() => liveSessions.delete(req.params.pin), 60000);
+    }
     res.json({ ok: true });
 });
 
@@ -2778,6 +2805,47 @@ app.post('/api/live/:pin/answer', verifyToken, verifyStudent, (req, res) => {
     me.lastPoints = points;
     me.score += points;
     res.json({ ok: true, points });
+});
+
+// ── LIFETIME LEADERBOARD (persisted live-quiz points) ───────────────────────
+// Teacher view: all-time rankings across their students, optionally by class.
+app.get('/api/leaderboard/lifetime', verifyToken, (req, res) => {
+    const { class_id } = req.query;
+    let sql = `SELECT s.name, s.student_id AS code, c.name AS class_name,
+                      SUM(ls.score) AS total, COUNT(*) AS games, MAX(ls.score) AS best
+               FROM live_scores ls
+               JOIN students s ON ls.student_id = s.id
+               JOIN classes c ON s.class_id = c.id
+               WHERE ls.teacher_id = ?`;
+    const p = [req.user.id];
+    if (class_id) { sql += ' AND s.class_id = ?'; p.push(class_id); }
+    sql += ' GROUP BY ls.student_id ORDER BY total DESC LIMIT 50';
+    db.all(sql, p, (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json((rows || []).map((r, i) => ({ ...r, rank: i + 1 })));
+    });
+});
+
+// Student view: their class lifetime leaderboard, self highlighted.
+app.get('/api/student/lifetime-leaderboard', verifyToken, verifyStudent, (req, res) => {
+    db.get('SELECT class_id FROM students WHERE id = ?', [req.user.id], (e, stu) => {
+        db.all(
+            `SELECT s.id, s.name, s.student_id AS code,
+                    COALESCE(SUM(ls.score), 0) AS total, COUNT(ls.id) AS games
+             FROM students s
+             LEFT JOIN live_scores ls ON ls.student_id = s.id
+             WHERE s.class_id = ?
+             GROUP BY s.id ORDER BY total DESC LIMIT 50`,
+            [stu?.class_id],
+            (err, rows) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json((rows || []).map((r, i) => ({
+                    rank: i + 1, name: r.name || r.code, total: r.total, games: r.games,
+                    isMe: r.id === req.user.id,
+                })));
+            }
+        );
+    });
 });
 
 // ── STUDENT quiz endpoints ───────────────────────────────────────────────────

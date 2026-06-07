@@ -368,10 +368,12 @@ function QuizzesTab() {
 function AchievementsTab() {
     const [g, setG] = useState(null);
     const [board, setBoard] = useState([]);
+    const [hof, setHof] = useState([]);
 
     useEffect(() => {
         api.get('/student/gamification').then(r => setG(r.data)).catch(() => {});
         api.get('/student/leaderboard').then(r => setBoard(r.data)).catch(() => {});
+        api.get('/student/lifetime-leaderboard').then(r => setHof(r.data)).catch(() => {});
     }, []);
 
     if (!g) return <div className="page-loader"><div className="spinner" /></div>;
@@ -388,6 +390,7 @@ function AchievementsTab() {
                 <div className="sp-level-stats">
                     <div><strong>{g.papers}</strong><span>Papers</span></div>
                     <div><strong>{g.quizzes}</strong><span>Quizzes</span></div>
+                    <div><strong>⚡{(g.livePoints || 0).toLocaleString()}</strong><span>Live Pts</span></div>
                     <div><strong>{g.avg}%</strong><span>Average</span></div>
                 </div>
             </div>
@@ -403,10 +406,27 @@ function AchievementsTab() {
                 ))}
             </div>
 
-            {/* Leaderboard */}
+            {/* Lifetime Live-Quiz leaderboard (persisted forever) */}
+            {hof.some(r => r.total > 0) && (
+                <>
+                    <h3 className="sp-section-h">⚡ Live Quiz Hall of Fame</h3>
+                    <div className="sp-board">
+                        {hof.filter(r => r.total > 0).map(r => (
+                            <div key={r.rank} className={`sp-board-row ${r.isMe ? 'me' : ''}`}>
+                                <span className="sp-rank">{['🥇','🥈','🥉'][r.rank - 1] || `#${r.rank}`}</span>
+                                <span className="sp-board-name">{r.name}{r.isMe && ' (You)'}</span>
+                                <span className="sp-board-lv">{r.games} game{r.games!==1?'s':''}</span>
+                                <span className="sp-board-xp">{r.total.toLocaleString()} pts</span>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+
+            {/* Overall XP leaderboard */}
             {board.length > 0 && (
                 <>
-                    <h3 className="sp-section-h"><Trophy size={17} /> Class Leaderboard</h3>
+                    <h3 className="sp-section-h"><Trophy size={17} /> Class Leaderboard (XP)</h3>
                     <div className="sp-board">
                         {board.map(r => (
                             <div key={r.rank} className={`sp-board-row ${r.isMe ? 'me' : ''}`}>

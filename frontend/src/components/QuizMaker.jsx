@@ -31,6 +31,7 @@ export default function QuizMaker() {
     const [resultsQuiz, setResultsQuiz] = useState(null);
     const [results, setResults] = useState([]);
     const [liveQuizId, setLiveQuizId] = useState(null);   // live host session
+    const [lifetime, setLifetime] = useState([]);
 
     useEffect(() => { fetchQuizzes(); fetchClasses(); fetchContexts(); }, []);
 
@@ -119,8 +120,31 @@ export default function QuizMaker() {
             <div className="qm-tabs">
                 <button className={`qm-tab ${tab==='list'?'active':''}`} onClick={() => setTab('list')}><FileText size={15}/> My Quizzes ({quizzes.length})</button>
                 <button className={`qm-tab ${tab==='create'?'active':''}`} onClick={() => { resetForm(); setTab('create'); }}><Plus size={15}/> Create Quiz</button>
+                <button className={`qm-tab ${tab==='leaderboard'?'active':''}`} onClick={() => { setTab('leaderboard'); api.get('/leaderboard/lifetime').then(r => setLifetime(r.data)).catch(()=>{}); }}><Award size={15}/> Hall of Fame</button>
                 {tab === 'results' && <button className="qm-tab active"><Award size={15}/> Results</button>}
             </div>
+
+            {tab === 'leaderboard' && (
+                <div className="qm-lifetime">
+                    <p className="qm-lifetime-sub">🏆 All-time live quiz champions — points accumulate across every game forever.</p>
+                    {lifetime.length === 0 ? (
+                        <div className="empty-state"><Award size={40}/><p>No live games played yet. Run a <strong>Go Live</strong> quiz to start the leaderboard!</p></div>
+                    ) : (
+                        <div className="qm-hof">
+                            {lifetime.map(r => (
+                                <div key={r.rank} className={`qm-hof-row rank-${r.rank}`}>
+                                    <span className="qm-hof-rank">{['🥇','🥈','🥉'][r.rank-1] || `#${r.rank}`}</span>
+                                    <div className="qm-hof-who">
+                                        <strong>{r.name || r.code}</strong>
+                                        <small>{r.class_name} · {r.games} game{r.games!==1?'s':''} · best {r.best}</small>
+                                    </div>
+                                    <span className="qm-hof-total">{r.total.toLocaleString()} pts</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* ── LIST ── */}
             {tab === 'list' && (
