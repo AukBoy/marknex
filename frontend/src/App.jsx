@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { HelpCircle, Moon, Sun } from 'lucide-react';
+import { HelpCircle, Moon, Sun, Menu, X } from 'lucide-react';
 import Login from './components/Login';
 import TourGuide from './components/TourGuide';
 import Sidebar from './components/Sidebar';
@@ -30,6 +30,7 @@ function App() {
   const [auth, setAuth] = useState(false);
   const [role, setRole] = useState(localStorage.getItem('role') || 'Teacher');
   const [showTour, setShowTour] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);   // mobile drawer
   const { isDark, toggle: toggleDarkMode } = useDarkMode();
 
   useEffect(() => {
@@ -79,7 +80,17 @@ function App() {
     <Router>
       <div className="app-container">
         <header className="glass-header">
-          <h1 className="logo-text">MarkNex</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {auth && (
+              <button
+                className="nav-hamburger"
+                onClick={() => setNavOpen(o => !o)}
+                aria-label="Menu">
+                {navOpen ? <X size={22} /> : <Menu size={22} />}
+              </button>
+            )}
+            <h1 className="logo-text">MarkNex</h1>
+          </div>
           {auth && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <button
@@ -106,7 +117,8 @@ function App() {
         </header>
 
         <div className="app-body">
-          {auth && <Sidebar />}
+          {auth && <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />}
+          {auth && navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
           <main className="main-content">
           <Routes>
         <Route path="/" element={!auth ? <Login onLogin={handleLogin} /> : <Navigate to="/dashboard" />} />

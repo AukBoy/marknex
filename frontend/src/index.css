@@ -159,23 +159,77 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
-/* On narrow screens the sidebar becomes a horizontal scrolling bar */
+/* Hamburger button — hidden on desktop, shown on mobile */
+.nav-hamburger {
+  display: none;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  cursor: pointer;
+  padding: 0.35rem;
+  border-radius: 8px;
+  align-items: center;
+  justify-content: center;
+}
+.nav-hamburger:hover { background: rgba(79, 70, 229, 0.1); color: var(--primary); }
+
+/* Dim backdrop behind the open mobile drawer */
+.nav-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 40;
+}
+
+/* On phones/tablets the sidebar becomes a slide-out drawer */
 @media (max-width: 768px) {
-  .app-body { flex-direction: column; }
+  .nav-hamburger { display: flex; }
+  .nav-backdrop { display: block; }
+
+  .glass-header { padding: 0.85rem 1rem; }
+  .logo-text { font-size: 1.4rem; }
+  .main-content { padding: 1rem; }
+
+  /* Shorten the Tour button to just its icon on mobile */
+  .glass-header .gap-hover { padding: 0.5rem 0.6rem; }
+
   .sidebar {
-    width: 100%;
-    height: auto;
-    position: static;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    overflow-x: auto;
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 78%;
+    max-width: 300px;
+    z-index: 50;
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+    padding: 1.5rem 1rem;
+    transform: translateX(-100%);
+    transition: transform 0.28s ease;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.18);
   }
-  .sidebar-heading { display: none; }
-  .sidebar-nav { flex-direction: row; }
+  .sidebar.open { transform: translateX(0); }
+
+  .sidebar-heading { display: block; margin-top: 0.5rem; }
+  .sidebar-nav { flex-direction: column; gap: 0.3rem; }
+  .sidebar-link { padding: 0.85rem 0.9rem; font-size: 1rem; }
   .sidebar-link span { white-space: nowrap; }
+
+  /* Cards & inputs */
+  .card { padding: 1.1rem !important; }
+  /* 16px input font stops iOS Safari from auto-zooming on focus */
+  .form-input, input, select, textarea { font-size: 16px !important; }
+
+  /* Header action buttons: tighten spacing, drop the "Tour" word */
+  .glass-header { gap: 0.4rem; }
+  .logout-button { padding: 0.45rem 0.6rem; font-size: 0.85rem; }
+
+  /* Any wide table scrolls horizontally instead of overflowing the page */
+  table { display: block; overflow-x: auto; white-space: nowrap; }
+
+  /* Headings shrink a touch */
+  h2 { font-size: 1.5rem !important; }
 }
 
 /* UI Components */

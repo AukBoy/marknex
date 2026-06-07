@@ -20,9 +20,9 @@ const NAV = [
     { to: '/settings', label: 'Settings', icon: Settings, tour: 'settings' },
 ];
 
-function Sidebar() {
+function Sidebar({ open = false, onClose = () => {} }) {
     return (
-        <aside className="sidebar">
+        <aside className={'sidebar' + (open ? ' open' : '')}>
             <p className="sidebar-heading">Menu</p>
             <nav className="sidebar-nav">
                 {NAV.map(({ to, label, icon: Icon, tour }) => (
@@ -30,6 +30,7 @@ function Sidebar() {
                         key={to}
                         to={to}
                         data-tour={tour}
+                        onClick={onClose}
                         className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
                     >
                         <Icon size={19} />
