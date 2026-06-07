@@ -29,7 +29,12 @@
 .qm-badge.live { background: rgba(16,185,129,0.12); color: #059669; }
 .qm-badge.draft { background: var(--border); color: var(--text-muted); }
 .qm-attempts { font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.25rem; }
-.qm-quiz-actions { display: flex; gap: 0.4rem; align-items: center; }
+.qm-quiz-actions { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.qm-live-btn {
+    background: linear-gradient(135deg, #ec4899, #8b5cf6) !important;
+    color: #fff !important; border: none !important;
+}
+.qm-live-btn:hover { box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4); }
 
 /* AI card */
 .qm-ai-card {

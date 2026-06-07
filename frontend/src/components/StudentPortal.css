@@ -32,6 +32,12 @@
     transition: all 0.18s;
 }
 .sp-logout:hover { border-color: #ef4444; color: #ef4444; }
+.sp-live-join {
+    border: none; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 700;
+    padding: 0.45rem 0.9rem; color: #fff;
+    background: linear-gradient(135deg, #ec4899, #8b5cf6);
+}
+.sp-live-join:hover { box-shadow: 0 4px 14px rgba(236,72,153,0.4); }
 
 /* Profile card */
 .sp-profile {

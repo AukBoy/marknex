@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
     Plus, Trash2, Sparkles, Loader, Save, Eye, Send, FileText,
-    CheckCircle, Users, Award, X, Edit2, Globe
+    CheckCircle, Users, Award, X, Edit2, Globe, Radio
 } from 'lucide-react';
 import api from '../api';
 import { showToast } from '../hooks/useToast';
+import LiveHost from './LiveHost';
 import './QuizMaker.css';
 
 const BLANK_Q = { text: '', options: ['', '', '', ''], correct: 0, explanation: '' };
@@ -29,6 +30,7 @@ export default function QuizMaker() {
     // results
     const [resultsQuiz, setResultsQuiz] = useState(null);
     const [results, setResults] = useState([]);
+    const [liveQuizId, setLiveQuizId] = useState(null);   // live host session
 
     useEffect(() => { fetchQuizzes(); fetchClasses(); fetchContexts(); }, []);
 
@@ -105,6 +107,8 @@ export default function QuizMaker() {
         setTab('results');
     };
 
+    if (liveQuizId) return <LiveHost quizId={liveQuizId} onExit={() => setLiveQuizId(null)} />;
+
     return (
         <div className="qm-container">
             <div className="qm-header">
@@ -136,6 +140,9 @@ export default function QuizMaker() {
                                 </div>
                             </div>
                             <div className="qm-quiz-actions">
+                                <button className="btn qm-sm qm-live-btn" onClick={() => setLiveQuizId(q.id)} title="Host a live Kahoot-style game">
+                                    <Radio size={13}/> Go Live
+                                </button>
                                 <button className="btn btn-secondary qm-sm" onClick={() => togglePublish(q)}>
                                     {q.is_published ? 'Unpublish' : <><Send size={13}/> Publish</>}
                                 </button>

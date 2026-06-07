@@ -5,6 +5,7 @@ import {
     PenTool, XCircle, Clock, ArrowLeft, Play, Trophy, Star, Zap
 } from 'lucide-react';
 import api from '../api';
+import LivePlay from './LivePlay';
 import './StudentPortal.css';
 
 // What a logged-in student sees: their own grades, AI feedback, and attendance.
@@ -16,6 +17,7 @@ export default function StudentPortal({ onLogout }) {
     const [openResult, setOpenResult] = useState(null);
     const [feedback, setFeedback] = useState({});      // resultId → feedback data
     const [loadingFb, setLoadingFb] = useState(null);
+    const [liveMode, setLiveMode] = useState(false);   // joined a live quiz
 
     useEffect(() => { load(); }, []);
 
@@ -53,6 +55,8 @@ export default function StudentPortal({ onLogout }) {
         } finally { setLoadingFb(null); }
     };
 
+    if (liveMode) return <LivePlay onExit={() => setLiveMode(false)} />;
+
     if (!profile) return <div className="sp-loading"><Loader className="spin" size={28} /> Loading your portal…</div>;
 
     return (
@@ -66,7 +70,10 @@ export default function StudentPortal({ onLogout }) {
                         <span>Welcome, {profile.name || profile.username}</span>
                     </div>
                 </div>
-                <button className="sp-logout" onClick={onLogout}><LogOut size={16} /> Logout</button>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button className="sp-live-join" onClick={() => setLiveMode(true)}>🎮 Join Live</button>
+                    <button className="sp-logout" onClick={onLogout}><LogOut size={16} /> Logout</button>
+                </div>
             </header>
 
             {/* Profile card */}

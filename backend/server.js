@@ -2634,6 +2634,143 @@ app.get('/api/quizzes/:id/results', verifyToken, (req, res) => {
     );
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// LIVE QUIZ MODE (Kahoot-style) — in-memory sessions, HTTP polling, no sockets.
+// A session is short-lived, so an in-memory store is ideal (and survives the
+// length of any single game).
+// ════════════════════════════════════════════════════════════════════════════
+const liveSessions = new Map(); // pin -> session
+
+function makePin() {
+    let pin;
+    do { pin = String(Math.floor(100000 + Math.random() * 900000)); } while (liveSessions.has(pin));
+    return pin;
+}
+
+// Teacher: start a live session for one of their quizzes.
+app.post('/api/live/start', verifyToken, (req, res) => {
+    const { quiz_id } = req.body;
+    db.get('SELECT * FROM quizzes WHERE id = ? AND teacher_id = ?', [quiz_id, req.user.id], (err, quiz) => {
+        if (err || !quiz) return res.status(404).json({ error: 'Quiz not found' });
+        const questions = JSON.parse(quiz.questions || '[]');
+        if (!questions.length) return res.status(400).json({ error: 'Quiz has no questions' });
+        const pin = makePin();
+        liveSessions.set(pin, {
+            pin, quizId: quiz.id, teacherId: req.user.id, title: quiz.title,
+            questions, phase: 'lobby', currentQ: -1, questionStartedAt: 0,
+            players: {}, // studentId -> { name, score, answers: {q:opt}, lastPoints }
+        });
+        res.json({ pin, title: quiz.title, total: questions.length });
+    });
+});
+
+// Teacher: advance the session. lobby -> Q0 -> reveal -> Q1 -> reveal ... -> ended
+app.post('/api/live/:pin/next', verifyToken, (req, res) => {
+    const s = liveSessions.get(req.params.pin);
+    if (!s || s.teacherId !== req.user.id) return res.status(404).json({ error: 'Session not found' });
+
+    if (s.phase === 'lobby' || s.phase === 'reveal') {
+        const next = s.currentQ + 1;
+        if (next >= s.questions.length) { s.phase = 'ended'; }
+        else { s.currentQ = next; s.phase = 'question'; s.questionStartedAt = Date.now(); }
+    } else if (s.phase === 'question') {
+        s.phase = 'reveal';
+    }
+    res.json({ phase: s.phase, currentQ: s.currentQ });
+});
+
+app.post('/api/live/:pin/end', verifyToken, (req, res) => {
+    const s = liveSessions.get(req.params.pin);
+    if (s && s.teacherId === req.user.id) { s.phase = 'ended'; setTimeout(() => liveSessions.delete(req.params.pin), 60000); }
+    res.json({ ok: true });
+});
+
+function leaderboard(s) {
+    return Object.values(s.players)
+        .map(p => ({ name: p.name, score: p.score }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10)
+        .map((p, i) => ({ ...p, rank: i + 1 }));
+}
+
+// Teacher: live state (question with answer, per-option counts, leaderboard).
+app.get('/api/live/:pin/state', verifyToken, (req, res) => {
+    const s = liveSessions.get(req.params.pin);
+    if (!s || s.teacherId !== req.user.id) return res.status(404).json({ error: 'Session not found' });
+    const q = s.currentQ >= 0 ? s.questions[s.currentQ] : null;
+    const counts = [0, 0, 0, 0];
+    let answered = 0;
+    if (q) for (const p of Object.values(s.players)) {
+        const a = p.answers[s.currentQ];
+        if (a !== undefined && a >= 0) { counts[a]++; answered++; }
+    }
+    res.json({
+        phase: s.phase, currentQ: s.currentQ, total: s.questions.length,
+        playerCount: Object.keys(s.players).length, answered,
+        question: q ? {
+            text: q.text, options: q.options,
+            correct: (s.phase === 'reveal' || s.phase === 'ended') ? q.correct : undefined,
+            explanation: (s.phase === 'reveal' || s.phase === 'ended') ? q.explanation : undefined,
+        } : null,
+        counts: (s.phase === 'reveal' || s.phase === 'ended') ? counts : undefined,
+        leaderboard: leaderboard(s),
+    });
+});
+
+// Student: join a session by PIN.
+app.post('/api/live/join', verifyToken, verifyStudent, async (req, res) => {
+    const s = liveSessions.get(String(req.body.pin || '').trim());
+    if (!s) return res.status(404).json({ error: 'No live quiz with that PIN. Check the code.' });
+    if (s.phase === 'ended') return res.status(400).json({ error: 'This quiz has already ended.' });
+    const stu = await new Promise(r => db.get('SELECT name, student_id FROM students WHERE id = ?', [req.user.id], (e, row) => r(row)));
+    if (!s.players[req.user.id]) {
+        s.players[req.user.id] = { name: stu?.name || stu?.student_id || 'Student', score: 0, answers: {}, lastPoints: 0 };
+    }
+    res.json({ pin: s.pin, title: s.title, total: s.questions.length });
+});
+
+// Student: poll the play state (question WITHOUT answer, their score/result).
+app.get('/api/live/:pin/play', verifyToken, verifyStudent, (req, res) => {
+    const s = liveSessions.get(req.params.pin);
+    if (!s) return res.status(404).json({ error: 'Session ended' });
+    const me = s.players[req.user.id] || { score: 0, answers: {}, lastPoints: 0 };
+    const q = s.currentQ >= 0 ? s.questions[s.currentQ] : null;
+    const myAnswer = q ? me.answers[s.currentQ] : undefined;
+    const board = leaderboard(s);
+    const myRank = (board.findIndex(b => b.name === me.name) + 1) || null;
+    res.json({
+        phase: s.phase, currentQ: s.currentQ, total: s.questions.length,
+        question: q && s.phase === 'question' ? { text: q.text, options: q.options } : null,
+        reveal: (s.phase === 'reveal' || s.phase === 'ended') && q
+            ? { correct: q.correct, explanation: q.explanation, yourAnswer: myAnswer, gotIt: myAnswer === q.correct, points: me.lastPoints }
+            : null,
+        answered: myAnswer !== undefined,
+        myScore: me.score, myRank, leaderboard: board,
+    });
+});
+
+// Student: submit an answer (scored by correctness + speed).
+app.post('/api/live/:pin/answer', verifyToken, verifyStudent, (req, res) => {
+    const s = liveSessions.get(req.params.pin);
+    if (!s || s.phase !== 'question') return res.status(400).json({ error: 'Not accepting answers now' });
+    const me = s.players[req.user.id];
+    if (!me) return res.status(400).json({ error: 'You have not joined' });
+    if (me.answers[s.currentQ] !== undefined) return res.json({ ok: true }); // already answered
+
+    const opt = Number(req.body.option);
+    me.answers[s.currentQ] = opt;
+    const q = s.questions[s.currentQ];
+    let points = 0;
+    if (opt === q.correct) {
+        const elapsed = Date.now() - s.questionStartedAt;
+        const speedBonus = Math.max(0, 500 - Math.floor(elapsed / 40)); // up to +500, decays ~20s
+        points = 500 + speedBonus;
+    }
+    me.lastPoints = points;
+    me.score += points;
+    res.json({ ok: true, points });
+});
+
 // ── STUDENT quiz endpoints ───────────────────────────────────────────────────
 
 // Available quizzes for the logged-in student's class (published only).
