@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, CheckSquare, Edit3, BookOpen, Award, BarChart2, Scale, Settings, Grid3x3, ClipboardList, GraduationCap, PenTool } from 'lucide-react';
+import { LayoutDashboard, CheckSquare, Edit3, BookOpen, Award, BarChart2, Scale, Settings, Grid3x3, ClipboardList, GraduationCap, PenTool, Brain } from 'lucide-react';
 
 // Persistent left navigation for the authenticated app. Each item links to a
 // route and carries the same data-tour anchors the voice tour spotlights, so
@@ -14,6 +14,7 @@ const NAV = [
     { to: '/quizzes', label: 'Online Quizzes', icon: PenTool },
     { to: '/tools', label: 'Teacher Tools', icon: GraduationCap },
     { to: '/class-report', label: 'Class Reports', icon: Award, tour: 'reports' },
+    { to: '/insights', label: 'AI Insights', icon: Brain },
     { to: '/analytics', label: 'Analytics', icon: BarChart2, tour: 'analytics' },
     { to: '/agreement', label: 'AI vs Teacher', icon: Scale },
     { to: '/manage', label: 'Manage Everything', icon: Grid3x3 },

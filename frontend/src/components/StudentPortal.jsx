@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     GraduationCap, FileText, TrendingUp, Award, CheckCircle,
     Calendar, LogOut, BookOpen, Target, Loader, Sparkles,
-    PenTool, XCircle, Clock, ArrowLeft, Play
+    PenTool, XCircle, Clock, ArrowLeft, Play, Trophy, Star, Zap
 } from 'lucide-react';
 import api from '../api';
 import './StudentPortal.css';
@@ -106,12 +106,16 @@ export default function StudentPortal({ onLogout }) {
                 <button className={`sp-tab ${tab === 'quizzes' ? 'active' : ''}`} onClick={() => setTab('quizzes')}>
                     <PenTool size={15} /> Quizzes
                 </button>
+                <button className={`sp-tab ${tab === 'achievements' ? 'active' : ''}`} onClick={() => setTab('achievements')}>
+                    <Trophy size={15} /> Achievements
+                </button>
                 <button className={`sp-tab ${tab === 'attendance' ? 'active' : ''}`} onClick={() => setTab('attendance')}>
                     <Calendar size={15} /> Attendance
                 </button>
             </div>
 
             {tab === 'quizzes' && <QuizzesTab />}
+            {tab === 'achievements' && <AchievementsTab />}
 
             {/* Results */}
             {tab === 'results' && (
@@ -347,6 +351,67 @@ function QuizzesTab() {
                     </div>
                 );
             })}
+        </div>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// ACHIEVEMENTS — XP, level, badges, class leaderboard
+// ─────────────────────────────────────────────────────────────
+function AchievementsTab() {
+    const [g, setG] = useState(null);
+    const [board, setBoard] = useState([]);
+
+    useEffect(() => {
+        api.get('/student/gamification').then(r => setG(r.data)).catch(() => {});
+        api.get('/student/leaderboard').then(r => setBoard(r.data)).catch(() => {});
+    }, []);
+
+    if (!g) return <div className="page-loader"><div className="spinner" /></div>;
+
+    return (
+        <div className="sp-achieve">
+            {/* Level + XP */}
+            <div className="sp-level-card">
+                <div className="sp-level-badge"><Zap size={22} /><span>Lv {g.level}</span></div>
+                <div className="sp-xp">
+                    <div className="sp-xp-row"><strong>{g.xp} XP</strong><span>{g.xpInLevel}/{g.xpToNext} to Lv {g.level + 1}</span></div>
+                    <div className="sp-xp-bar"><div style={{ width: `${(g.xpInLevel / g.xpToNext) * 100}%` }} /></div>
+                </div>
+                <div className="sp-level-stats">
+                    <div><strong>{g.papers}</strong><span>Papers</span></div>
+                    <div><strong>{g.quizzes}</strong><span>Quizzes</span></div>
+                    <div><strong>{g.avg}%</strong><span>Average</span></div>
+                </div>
+            </div>
+
+            {/* Badges */}
+            <h3 className="sp-section-h"><Award size={17} /> Badges</h3>
+            <div className="sp-badges">
+                {g.badges.map(b => (
+                    <div key={b.id} className={`sp-badge ${b.earned ? 'earned' : 'locked'}`} title={b.name}>
+                        <span className="sp-badge-icon">{b.earned ? b.icon : '🔒'}</span>
+                        <span className="sp-badge-name">{b.name}</span>
+                    </div>
+                ))}
+            </div>
+
+            {/* Leaderboard */}
+            {board.length > 0 && (
+                <>
+                    <h3 className="sp-section-h"><Trophy size={17} /> Class Leaderboard</h3>
+                    <div className="sp-board">
+                        {board.map(r => (
+                            <div key={r.rank} className={`sp-board-row ${r.isMe ? 'me' : ''}`}>
+                                <span className="sp-rank">{['🥇','🥈','🥉'][r.rank - 1] || `#${r.rank}`}</span>
+                                <span className="sp-board-name">{r.name}{r.isMe && ' (You)'}</span>
+                                <span className="sp-board-lv">Lv {r.level}</span>
+                                <span className="sp-board-xp">{r.xp} XP</span>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
         </div>
     );
 }

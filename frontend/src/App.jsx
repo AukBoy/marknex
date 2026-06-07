@@ -25,6 +25,7 @@ const PaperGenerator     = lazy(() => import('./components/PaperGenerator'));
 const TeacherTools       = lazy(() => import('./components/TeacherTools'));
 const StudentPortal      = lazy(() => import('./components/StudentPortal'));
 const QuizMaker          = lazy(() => import('./components/QuizMaker'));
+const AIInsights         = lazy(() => import('./components/AIInsights'));
 
 // Shown while a route chunk is loading.
 function PageLoader() {
@@ -153,6 +154,7 @@ function App() {
             <Route path="/generate" element={auth ? <PaperGenerator /> : <Navigate to="/" />} />
             <Route path="/tools" element={auth ? <TeacherTools /> : <Navigate to="/" />} />
             <Route path="/quizzes" element={auth ? <QuizMaker /> : <Navigate to="/" />} />
+            <Route path="/insights" element={auth ? <AIInsights /> : <Navigate to="/" />} />
           </Routes>
           </Suspense>
           </main>

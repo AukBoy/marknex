@@ -1279,6 +1279,64 @@ app.get('/api/student/results', verifyToken, verifyStudent, (req, res) => {
     );
 });
 
+// ── GAMIFICATION — XP, level, badges, class leaderboard ─────────────────────
+// XP is derived from graded papers and quiz attempts (no extra tables needed).
+async function computeGamification(studentRowId, studentCode, teacherId, classId) {
+    const scripts = await new Promise(r => db.all(
+        `SELECT total_marks, max_marks FROM scripts WHERE student_id = ? AND teacher_id = ? AND is_deleted = 0 AND total_marks IS NOT NULL`,
+        [studentCode, teacherId], (e, rows) => r(rows || [])));
+    const quizzes = await new Promise(r => db.all(
+        `SELECT score, total FROM quiz_attempts WHERE student_id = ?`, [studentRowId], (e, rows) => r(rows || [])));
+
+    let xp = 0;
+    const scriptPcts = scripts.map(s => s.max_marks ? (s.total_marks / s.max_marks) * 100 : 0);
+    const quizPcts   = quizzes.map(q => q.total ? (q.score / q.total) * 100 : 0);
+    // 10 XP per paper + bonus for high scores; 8 XP per quiz + bonus.
+    scriptPcts.forEach(p => { xp += 10 + Math.round(p / 10) + (p >= 90 ? 15 : 0); });
+    quizPcts.forEach(p => { xp += 8 + Math.round(p / 10) + (p === 100 ? 20 : 0); });
+
+    const allPcts = [...scriptPcts, ...quizPcts];
+    const avg = allPcts.length ? allPcts.reduce((a, b) => a + b, 0) / allPcts.length : 0;
+    const level = Math.floor(xp / 100) + 1;
+    const xpInLevel = xp % 100;
+
+    const badges = [];
+    const add = (id, icon, name, earned) => badges.push({ id, icon, name, earned });
+    add('first_steps', '🎯', 'First Steps', allPcts.length >= 1);
+    add('quiz_taker',  '✏️', 'Quiz Taker', quizzes.length >= 1);
+    add('quiz_master', '🏆', 'Quiz Master', quizzes.length >= 5);
+    add('perfect',     '💯', 'Perfect Score', quizPcts.some(p => p === 100) || scriptPcts.some(p => p >= 100));
+    add('high_flyer',  '🚀', 'High Flyer', avg >= 80 && allPcts.length >= 3);
+    add('dedicated',   '🔥', 'Dedicated', allPcts.length >= 10);
+    add('scholar',     '🎓', 'Scholar', level >= 5);
+
+    return { xp, level, xpInLevel, xpToNext: 100, avg: Math.round(avg), papers: scripts.length, quizzes: quizzes.length, badges };
+}
+
+app.get('/api/student/gamification', verifyToken, verifyStudent, async (req, res) => {
+    try {
+        const stu = await new Promise(r => db.get('SELECT class_id FROM students WHERE id = ?', [req.user.id], (e, row) => r(row)));
+        const g = await computeGamification(req.user.id, req.user.student_code, req.user.teacher_id, stu?.class_id);
+        res.json(g);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Class leaderboard (by XP) — visible to students in the same class.
+app.get('/api/student/leaderboard', verifyToken, verifyStudent, async (req, res) => {
+    try {
+        const stu = await new Promise(r => db.get('SELECT class_id FROM students WHERE id = ?', [req.user.id], (e, row) => r(row)));
+        const classmates = await new Promise(r => db.all(
+            'SELECT id, student_id, name FROM students WHERE class_id = ?', [stu?.class_id], (e, rows) => r(rows || [])));
+        const board = [];
+        for (const c of classmates) {
+            const g = await computeGamification(c.id, c.student_id, req.user.teacher_id, stu?.class_id);
+            board.push({ name: c.name || c.student_id, xp: g.xp, level: g.level, isMe: c.id === req.user.id });
+        }
+        board.sort((a, b) => b.xp - a.xp);
+        res.json(board.slice(0, 20).map((b, i) => ({ ...b, rank: i + 1 })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Student's own attendance summary
 app.get('/api/student/attendance', verifyToken, verifyStudent, (req, res) => {
     db.all(
@@ -2642,6 +2700,102 @@ app.post('/api/student/quizzes/:id/submit', verifyToken, verifyStudent, (req, re
             }
         );
     });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// AI CLASS INSIGHTS — analyse results, flag at-risk students, recommend actions
+// ════════════════════════════════════════════════════════════════════════════
+app.post('/api/insights', verifyToken, async (req, res) => {
+    const { grade, subject } = req.body || {};
+    try {
+        // Pull all graded scripts for this teacher (optionally filtered).
+        const rows = await new Promise((resolve, reject) => {
+            let sql = `SELECT student_id, subject, grade, exam, total_marks, max_marks, upload_timestamp
+                       FROM scripts WHERE teacher_id = ? AND is_deleted = 0 AND total_marks IS NOT NULL`;
+            const p = [req.user.id];
+            if (grade)   { sql += ' AND grade = ?';   p.push(grade); }
+            if (subject) { sql += ' AND subject = ?'; p.push(subject); }
+            db.all(sql, p, (e, r) => e ? reject(e) : resolve(r || []));
+        });
+
+        if (rows.length === 0) return res.json({ empty: true, message: 'No graded papers yet. Grade some papers to unlock AI insights.' });
+
+        const pct = (r) => (r.max_marks ? (r.total_marks / r.max_marks) * 100 : 0);
+
+        // Per-student aggregation (with simple trend from first→last attempt).
+        const byStudent = {};
+        for (const r of rows) {
+            const s = byStudent[r.student_id] || (byStudent[r.student_id] = { scores: [], subjects: {} });
+            s.scores.push({ p: pct(r), t: r.upload_timestamp });
+            s.subjects[r.subject] = s.subjects[r.subject] || [];
+            s.subjects[r.subject].push(pct(r));
+        }
+
+        const students = Object.entries(byStudent).map(([id, s]) => {
+            const sorted = s.scores.slice().sort((a, b) => new Date(a.t) - new Date(b.t));
+            const avg = s.scores.reduce((x, y) => x + y.p, 0) / s.scores.length;
+            const trend = sorted.length >= 2 ? sorted[sorted.length - 1].p - sorted[0].p : 0;
+            return { id, avg: Math.round(avg), count: s.scores.length, trend: Math.round(trend) };
+        });
+
+        const classAvg = Math.round(students.reduce((x, s) => x + s.avg, 0) / students.length);
+        const atRisk = students.filter(s => s.avg < 50 || (s.avg < 60 && s.trend < -10))
+                               .sort((a, b) => a.avg - b.avg);
+        const topPerformers = students.filter(s => s.avg >= 75).sort((a, b) => b.avg - a.avg);
+
+        // Per-subject averages.
+        const subjAgg = {};
+        for (const r of rows) {
+            (subjAgg[r.subject] = subjAgg[r.subject] || []).push(pct(r));
+        }
+        const subjectStats = Object.entries(subjAgg).map(([name, arr]) => ({
+            name, avg: Math.round(arr.reduce((a, b) => a + b, 0) / arr.length), count: arr.length,
+        })).sort((a, b) => a.avg - b.avg);
+
+        // AI narrative.
+        const summaryForAI = `Class average: ${classAvg}%. Students: ${students.length}. Papers graded: ${rows.length}.
+Subject averages: ${subjectStats.map(s => `${s.name} ${s.avg}%`).join(', ')}.
+At-risk students (id, avg%, trend): ${atRisk.slice(0, 8).map(s => `${s.id} (${s.avg}%, ${s.trend >= 0 ? '+' : ''}${s.trend})`).join('; ') || 'none'}.
+Top performers: ${topPerformers.slice(0, 5).map(s => `${s.id} (${s.avg}%)`).join('; ') || 'none'}.`;
+
+        let narrative = {};
+        try {
+            const resp = await openai.chat.completions.create({
+                model: process.env.FINE_TUNED_MODEL_ID || 'gpt-4o',
+                messages: [{
+                    role: 'user',
+                    content: `You are an education data analyst. Based on this class performance data, give the teacher actionable insights.
+${summaryForAI}
+
+Return JSON:
+{
+  "headline": "1 sentence overall summary",
+  "strengths": ["what the class does well", "..."],
+  "concerns": ["main weaknesses / topics to reteach", "..."],
+  "at_risk_advice": "1-2 sentences on how to help the struggling students",
+  "recommendations": ["concrete next action", "..."]
+}
+Keep it concise and practical. Return ONLY raw JSON.`,
+                }],
+                max_tokens: 700,
+                temperature: 0.5,
+                response_format: { type: 'json_object' },
+            });
+            narrative = JSON.parse(resp.choices[0].message.content);
+        } catch { narrative = { headline: `Class average is ${classAvg}%.`, strengths: [], concerns: [], at_risk_advice: '', recommendations: [] }; }
+
+        res.json({
+            classAvg,
+            totalStudents: students.length,
+            totalPapers: rows.length,
+            subjectStats,
+            atRisk: atRisk.slice(0, 10),
+            topPerformers: topPerformers.slice(0, 5),
+            narrative,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ════════════════════════════════════════════════════════════════════════════

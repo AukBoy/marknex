@@ -1,0 +1,77 @@
+/* ── AIInsights.css ──────────────────────────────────────────── */
+.ai-insights { max-width: 1000px; margin: 0 auto; }
+.aii-header { margin-bottom: 1.5rem; }
+.aii-header h2 { margin: 0 0 0.3rem; font-size: 1.9rem; }
+.aii-header p { margin: 0; color: var(--text-muted); }
+
+.aii-controls { display: flex; gap: 0.75rem; margin-bottom: 1.75rem; flex-wrap: wrap; }
+.aii-controls .form-input { max-width: 200px; }
+
+@keyframes aii-spin-kf { to { transform: rotate(360deg); } }
+.aii-spin { animation: aii-spin-kf 0.8s linear infinite; }
+
+/* Stat cards */
+.aii-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+@media (max-width: 700px) { .aii-stats { grid-template-columns: 1fr 1fr; } }
+.aii-stat {
+    display: flex; align-items: center; gap: 0.85rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1.1rem;
+}
+.aii-stat-icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.aii-stat strong { display: block; font-size: 1.5rem; line-height: 1; }
+.aii-stat span { font-size: 0.8rem; color: var(--text-muted); }
+
+/* AI headline */
+.aii-headline {
+    display: flex; align-items: center; gap: 0.6rem;
+    background: linear-gradient(135deg, rgba(79,70,229,0.1), rgba(139,92,246,0.1));
+    border: 1px solid rgba(79,70,229,0.25); border-radius: var(--radius);
+    padding: 1rem 1.25rem; margin-bottom: 1.5rem;
+    font-size: 1.02rem; font-weight: 600; color: var(--text-main);
+}
+.aii-headline svg { color: var(--primary); flex-shrink: 0; }
+
+.aii-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+@media (max-width: 700px) { .aii-grid { grid-template-columns: 1fr; } }
+
+.aii-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1.25rem;
+}
+.aii-card h3 { margin: 0 0 1rem; font-size: 1rem; display: flex; align-items: center; gap: 0.45rem; }
+.aii-muted { color: var(--text-muted); margin: 0; }
+
+/* Subject bars */
+.aii-bar-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.7rem; }
+.aii-bar-label { width: 90px; font-size: 0.88rem; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aii-bar-track { flex: 1; height: 10px; background: var(--surface-alt); border-radius: 6px; overflow: hidden; }
+.aii-bar-fill { height: 100%; border-radius: 6px; transition: width 0.6s ease; }
+.aii-bar-val { width: 42px; text-align: right; font-weight: 700; font-size: 0.88rem; }
+
+/* At-risk */
+.aii-risk-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0; border-bottom: 1px solid var(--border); }
+.aii-risk-row:last-child { border-bottom: none; }
+.aii-risk-id { flex: 1; font-weight: 600; font-size: 0.9rem; }
+.aii-trend { display: flex; align-items: center; gap: 0.2rem; font-size: 0.8rem; font-weight: 600; }
+.aii-trend.up { color: #10b981; }
+.aii-trend.down { color: #ef4444; }
+.aii-risk-avg { font-weight: 700; color: #ef4444; width: 42px; text-align: right; }
+
+/* Narrative lists */
+.aii-narr ul, .aii-recommend ul { margin: 0; padding-left: 1.2rem; }
+.aii-narr li, .aii-recommend li { font-size: 0.9rem; margin-bottom: 0.5rem; line-height: 1.5; }
+.aii-recommend { margin-bottom: 1rem; }
+.aii-advice {
+    margin-top: 0.85rem; background: rgba(79,70,229,0.06); border-left: 3px solid var(--primary);
+    border-radius: 0 8px 8px 0; padding: 0.65rem 0.9rem; font-size: 0.88rem; color: var(--text-muted);
+}
+
+/* Top performers */
+.aii-top { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.aii-top-chip {
+    display: flex; align-items: center; gap: 0.4rem;
+    background: var(--surface-alt); border: 1px solid var(--border);
+    border-radius: 20px; padding: 0.4rem 0.85rem; font-size: 0.9rem;
+}
+.aii-medal { font-size: 1.1rem; }

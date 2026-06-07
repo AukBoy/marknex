@@ -252,5 +252,56 @@
     background: rgba(79,70,229,0.05); padding: 0.55rem 0.8rem; border-radius: 8px;
 }
 
+/* ── Achievements / Gamification ─────────────────────────────── */
+.sp-achieve { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.sp-level-card {
+    display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
+    background: linear-gradient(135deg, #4f46e5, #8b5cf6);
+    color: #fff; border-radius: 18px; padding: 1.5rem;
+}
+.sp-level-badge {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 72px; height: 72px; border-radius: 50%;
+    background: rgba(255,255,255,0.2); flex-shrink: 0;
+}
+.sp-level-badge span { font-weight: 800; font-size: 0.95rem; margin-top: 0.1rem; }
+.sp-xp { flex: 1; min-width: 160px; }
+.sp-xp-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.4rem; }
+.sp-xp-row strong { font-size: 1.3rem; }
+.sp-xp-row span { font-size: 0.8rem; opacity: 0.85; }
+.sp-xp-bar { height: 10px; background: rgba(255,255,255,0.25); border-radius: 6px; overflow: hidden; }
+.sp-xp-bar > div { height: 100%; background: #fff; border-radius: 6px; transition: width 0.6s ease; }
+.sp-level-stats { display: flex; gap: 1.25rem; }
+.sp-level-stats div { text-align: center; }
+.sp-level-stats strong { display: block; font-size: 1.3rem; }
+.sp-level-stats span { font-size: 0.72rem; opacity: 0.85; text-transform: uppercase; }
+
+.sp-section-h { display: flex; align-items: center; gap: 0.5rem; font-size: 1.05rem; margin: 0.5rem 0 0; }
+
+.sp-badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.75rem; }
+.sp-badge {
+    display: flex; flex-direction: column; align-items: center; gap: 0.4rem;
+    padding: 1rem 0.5rem; border-radius: 14px; border: 1px solid var(--border);
+    text-align: center; transition: transform 0.15s;
+}
+.sp-badge.earned { background: var(--surface); }
+.sp-badge.earned:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
+.sp-badge.locked { opacity: 0.5; filter: grayscale(0.6); }
+.sp-badge-icon { font-size: 2rem; line-height: 1; }
+.sp-badge-name { font-size: 0.78rem; font-weight: 600; color: var(--text-muted); }
+
+.sp-board { display: flex; flex-direction: column; gap: 0.4rem; }
+.sp-board-row {
+    display: flex; align-items: center; gap: 0.85rem;
+    padding: 0.7rem 1rem; border-radius: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+}
+.sp-board-row.me { border-color: var(--primary); background: var(--primary-soft); }
+.sp-rank { width: 36px; font-weight: 700; font-size: 1.05rem; }
+.sp-board-name { flex: 1; font-weight: 600; }
+.sp-board-lv { font-size: 0.82rem; color: var(--text-muted); }
+.sp-board-xp { font-weight: 700; color: var(--primary); }
+
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; }
