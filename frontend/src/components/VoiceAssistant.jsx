@@ -19,6 +19,7 @@ export default function VoiceAssistant() {
 
     const recognitionRef = useRef(null);
     const scrollRef      = useRef(null);
+    const [micError, setMicError] = useState('');
 
     const LOCALE = { Sinhala: 'si-LK', Tamil: 'ta-LK', English: 'en-US' };
 
@@ -27,29 +28,68 @@ export default function VoiceAssistant() {
     }, [messages, loading]);
 
     // ── Speech-to-text ──
-    const startListening = () => {
+    const startListening = async () => {
+        setMicError('');
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SR) {
-            alert('Voice input is not supported in this browser. Please use Chrome, or type your question.');
+            setMicError('🎤 Voice input needs Google Chrome. Please type your question instead.');
             return;
         }
-        const rec = new SR();
-        rec.lang = LOCALE[lang];
-        rec.interimResults = false;
-        rec.maxAlternatives = 1;
 
-        rec.onresult = (e) => {
-            const transcript = e.results[0][0].transcript;
-            setInput(transcript);
-            setListening(false);
-            ask(transcript);
+        // Voice APIs require a secure context (HTTPS) — localhost is exempt.
+        if (!window.isSecureContext && location.hostname !== 'localhost') {
+            setMicError('🎤 Voice needs a secure (https) connection. Type your question instead.');
+            return;
+        }
+
+        // Ask for microphone permission up-front so we get a clear failure reason.
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach(t => t.stop()); // we only needed the permission
+        } catch (permErr) {
+            setMicError('🎤 Microphone blocked. Click the 🔒/camera icon in the address bar → allow microphone, then try again.');
+            return;
+        }
+
+        const run = (locale, isFallback) => {
+            const rec = new SR();
+            rec.lang = locale;
+            rec.interimResults = false;
+            rec.maxAlternatives = 1;
+
+            rec.onresult = (e) => {
+                const transcript = e.results[0][0].transcript;
+                setInput(transcript);
+                setListening(false);
+                ask(transcript);
+            };
+            rec.onerror = (e) => {
+                setListening(false);
+                // If the chosen language isn't supported, retry once in English.
+                if (e.error === 'language-not-supported' && !isFallback) {
+                    setMicError('සිංහල හඬ හඳුනාගැනීම මෙම browser එකේ නැත — English වලින් උත්සාහ කරමි…');
+                    setTimeout(() => { setListening(true); run('en-US', true); }, 400);
+                    return;
+                }
+                const map = {
+                    'not-allowed': '🎤 Microphone permission denied. Allow it in the address bar.',
+                    'service-not-allowed': '🎤 Microphone permission denied.',
+                    'no-speech': '🤫 Didn\'t hear anything. Tap the mic and speak.',
+                    'audio-capture': '🎤 No microphone found on this device.',
+                    'network': '🌐 Network error — voice needs an internet connection.',
+                    'language-not-supported': 'This language isn\'t supported for voice. Please type instead.',
+                };
+                setMicError(map[e.error] || `Voice error: ${e.error}. Please type instead.`);
+            };
+            rec.onend = () => setListening(false);
+
+            recognitionRef.current = rec;
+            try { rec.start(); }
+            catch { setListening(false); setMicError('Could not start the microphone. Please type instead.'); }
         };
-        rec.onerror = () => setListening(false);
-        rec.onend = () => setListening(false);
 
-        recognitionRef.current = rec;
         setListening(true);
-        rec.start();
+        run(LOCALE[lang], false);
     };
 
     const stopListening = () => {
@@ -138,6 +178,7 @@ export default function VoiceAssistant() {
                     </div>
 
                     {listening && <div className="va-listening">🎤 අහගෙන සිටිමි… (Listening…)</div>}
+                    {micError && <div className="va-mic-error">{micError}</div>}
 
                     <div className="va-input-bar">
                         <button

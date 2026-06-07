@@ -143,6 +143,16 @@
     animation: va-blink 1.5s infinite;
 }
 
+/* Mic error / hint banner */
+.va-mic-error {
+    font-size: 0.84rem;
+    color: #b45309;
+    background: rgba(245, 158, 11, 0.12);
+    padding: 0.55rem 0.85rem;
+    line-height: 1.45;
+    border-top: 1px solid rgba(245, 158, 11, 0.25);
+}
+
 /* Input bar */
 .va-input-bar {
     display: flex;
