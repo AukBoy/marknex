@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Loader, Trophy, CheckCircle, XCircle, X } from 'lucide-react';
+import { Loader, Trophy, CheckCircle, XCircle, X, Clock } from 'lucide-react';
 import api from '../api';
+import { sfx, unlockAudio } from '../utils/sounds';
 import './Live.css';
 
 // Student's phone view for joining & playing a live quiz.
@@ -16,20 +17,33 @@ export default function LivePlay({ onExit }) {
     const OPT_COLORS = ['#ef4444', '#3b82f6', '#f59e0b', '#10b981'];
     const OPT_SHAPES = ['▲', '◆', '●', '■'];
 
+    const prevPhase = useRef(null);
+
     const join = async () => {
         setError('');
+        unlockAudio();
         try {
             const r = await api.post('/live/join', { pin: pin.trim() });
             setTitle(r.data.title);
             setJoined(true);
+            sfx('join');
         } catch (err) { setError(err.response?.data?.error || 'Could not join'); }
     };
 
     useEffect(() => {
         if (!joined) return;
-        const tick = () => api.get(`/live/${pin.trim()}/play`).then(r => setState(r.data)).catch(() => {});
+        const tick = () => api.get(`/live/${pin.trim()}/play`).then(r => {
+            const st = r.data;
+            if (prevPhase.current !== st.phase) {
+                if (st.phase === 'question') sfx('start');
+                else if (st.phase === 'reveal' && st.reveal) sfx(st.reveal.gotIt ? 'correct' : 'wrong');
+                else if (st.phase === 'ended') sfx('podium');
+                prevPhase.current = st.phase;
+            }
+            setState(st);
+        }).catch(() => {});
         tick();
-        poll.current = setInterval(tick, 1500);
+        poll.current = setInterval(tick, 1000);
         return () => clearInterval(poll.current);
     }, [joined, pin]);
 
@@ -79,7 +93,14 @@ export default function LivePlay({ onExit }) {
     if (state.phase === 'question' && state.question) {
         return (
             <div className="live-play">
-                <div className="live-play-top">Q{state.currentQ + 1} / {state.total} · <strong>{state.myScore}</strong> pts</div>
+                <div className="live-play-top">
+                    Q{state.currentQ + 1} / {state.total} · <strong>{state.myScore}</strong> pts
+                    {state.secondsLeft != null && (
+                        <span className={`live-play-timer ${state.secondsLeft <= 5 ? 'urgent' : ''}`}>
+                            <Clock size={15} /> {state.secondsLeft}s
+                        </span>
+                    )}
+                </div>
                 <h3 className="live-play-q">{state.question.text}</h3>
                 {state.answered ? (
                     <div className="live-play-locked"><CheckCircle size={40} /><p>Answer locked in!<br/>Waiting for others…</p></div>

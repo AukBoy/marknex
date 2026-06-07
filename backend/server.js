@@ -2658,6 +2658,7 @@ app.post('/api/live/start', verifyToken, (req, res) => {
         liveSessions.set(pin, {
             pin, quizId: quiz.id, teacherId: req.user.id, title: quiz.title,
             questions, phase: 'lobby', currentQ: -1, questionStartedAt: 0,
+            questionDuration: 20, // seconds per question
             players: {}, // studentId -> { name, score, answers: {q:opt}, lastPoints }
         });
         res.json({ pin, title: quiz.title, total: questions.length });
@@ -2693,6 +2694,12 @@ function leaderboard(s) {
         .map((p, i) => ({ ...p, rank: i + 1 }));
 }
 
+function secondsLeft(s) {
+    if (s.phase !== 'question') return null;
+    const elapsed = (Date.now() - s.questionStartedAt) / 1000;
+    return Math.max(0, Math.ceil(s.questionDuration - elapsed));
+}
+
 // Teacher: live state (question with answer, per-option counts, leaderboard).
 app.get('/api/live/:pin/state', verifyToken, (req, res) => {
     const s = liveSessions.get(req.params.pin);
@@ -2707,6 +2714,7 @@ app.get('/api/live/:pin/state', verifyToken, (req, res) => {
     res.json({
         phase: s.phase, currentQ: s.currentQ, total: s.questions.length,
         playerCount: Object.keys(s.players).length, answered,
+        secondsLeft: secondsLeft(s), duration: s.questionDuration,
         question: q ? {
             text: q.text, options: q.options,
             correct: (s.phase === 'reveal' || s.phase === 'ended') ? q.correct : undefined,
@@ -2740,6 +2748,7 @@ app.get('/api/live/:pin/play', verifyToken, verifyStudent, (req, res) => {
     const myRank = (board.findIndex(b => b.name === me.name) + 1) || null;
     res.json({
         phase: s.phase, currentQ: s.currentQ, total: s.questions.length,
+        secondsLeft: secondsLeft(s), duration: s.questionDuration,
         question: q && s.phase === 'question' ? { text: q.text, options: q.options } : null,
         reveal: (s.phase === 'reveal' || s.phase === 'ended') && q
             ? { correct: q.correct, explanation: q.explanation, yourAnswer: myAnswer, gotIt: myAnswer === q.correct, points: me.lastPoints }
