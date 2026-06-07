@@ -2644,6 +2644,58 @@ app.post('/api/student/quizzes/:id/submit', verifyToken, verifyStudent, (req, re
     });
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// HELP ASSISTANT — answers teacher questions about how to use MarkNex
+// ════════════════════════════════════════════════════════════════════════════
+const MARKNEX_HELP_CONTEXT = `You are "MarkNex Assistant", a friendly help guide for teachers using the MarkNex teaching platform.
+Answer questions about how to use the system. Keep answers short, clear and step-by-step (2-5 short steps).
+
+MARKNEX FEATURES (sidebar menu):
+- Dashboard: Upload student answer papers (PDF/photo). Pick the Class and Student from dropdowns, choose Exam, then "Process with AI" to auto-grade.
+- Bulk MCQ Grader: Grade many multiple-choice answer sheets at once against an answer key.
+- Bulk Essay Grader: Grade many essays at once using a marking scheme.
+- Manage Assignments: Create assignments with questions, rubrics and max marks.
+- Generate Papers: Auto-create exam papers from an uploaded textbook. Pick textbook, choose question types and counts, Generate, then print/share.
+- Online Quizzes: Create MCQ quizzes (type them or generate with AI from a topic/textbook). Publish to a class. Students take them and get instant marks & feedback. View results per quiz.
+- Teacher Tools: Attendance (mark daily present/absent), Timetable (weekly class schedule), Lesson Plans (AI-generate full plans), Notices (AI-draft parent messages).
+- Class Reports / Analytics / AI vs Teacher: View performance reports and AI-vs-teacher grade agreement.
+- Manage Everything: Add Classes, Students (with login accounts), Exams, and upload Textbooks (curriculum is extracted and used when grading).
+- Settings: Manage Grade/Subject/Exam dropdown options.
+
+STUDENT ACCOUNTS: In Manage Everything → Classes → Students, add a student and give a Username + Password. The student logs in via "I'm a Student" to see their results, AI improvement tips, quizzes and attendance.
+
+TEXTBOOKS: In Manage Everything → Textbooks, pick Grade + Subject, choose language, upload a PDF. AI reads all pages and stores the curriculum. It is then auto-used when grading papers for that grade+subject.
+
+GRADING: AI grades 3 times and averages for accuracy. After grading, open a report and click "AI Improvement Feedback" to generate study suggestions for the student.
+
+If the question is not about MarkNex, politely say you can only help with the MarkNex system.`;
+
+app.post('/api/assistant/ask', verifyToken, async (req, res) => {
+    const { question, language = 'Sinhala' } = req.body;
+    if (!question?.trim()) return res.status(400).json({ error: 'question required' });
+
+    const langRule = language === 'Sinhala'
+        ? 'Answer in clear, simple Sinhala (සිංහල). Keep English technical/menu names in English (e.g. "Online Quizzes", "Dashboard", "Manage Everything") since that is how they appear in the app.'
+        : language === 'Tamil'
+        ? 'Answer in clear Tamil, keeping English menu names in English.'
+        : 'Answer in clear, simple English.';
+
+    try {
+        const resp = await openai.chat.completions.create({
+            model: process.env.FINE_TUNED_MODEL_ID || 'gpt-4o',
+            messages: [
+                { role: 'system', content: `${MARKNEX_HELP_CONTEXT}\n\n${langRule}` },
+                { role: 'user', content: question },
+            ],
+            max_tokens: 500,
+            temperature: 0.4,
+        });
+        res.json({ answer: resp.choices[0].message.content.trim() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
     // Recover scripts left 'Pending' by an interrupted/crashed evaluation.
     // The in-memory AI job is lost on restart, so any Pending row is stuck —
     // flag it for manual review instead of polling forever.

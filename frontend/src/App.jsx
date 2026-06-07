@@ -19,6 +19,7 @@ import PaperGenerator from './components/PaperGenerator';
 import TeacherTools from './components/TeacherTools';
 import StudentPortal from './components/StudentPortal';
 import QuizMaker from './components/QuizMaker';
+import VoiceAssistant from './components/VoiceAssistant';
 import ToastContainer from './components/ToastContainer';
 import KeyboardShortcuts from './components/KeyboardShortcuts';
 import { useDarkMode } from './hooks/useDarkMode';
@@ -141,6 +142,7 @@ function App() {
         </div>
 
         {auth && showTour && <TourGuide onClose={finishTour} />}
+        {auth && role !== 'Student' && <VoiceAssistant />}
         <ToastContainer />
         <KeyboardShortcuts />
       </div>
