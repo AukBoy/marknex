@@ -142,11 +142,50 @@ function PaperGenerator() {
         } catch { showToast.error('Failed to delete paper'); }
     };
 
+    // Open a clean window containing ONLY the paper, then print → "Save as PDF".
+    // This guarantees the PDF has just the exam paper (no app sidebar/buttons).
     const handlePrint = () => {
-        const prev = document.title;
-        document.title = activePaper?.paper?.title || 'Exam Paper';
-        window.print();
-        document.title = prev;
+        const node = document.getElementById('printable-paper');
+        if (!node) return;
+        const title = activePaper?.paper?.title || 'Exam Paper';
+        const w = window.open('', '_blank', 'width=900,height=1000');
+        if (!w) { alert('Please allow pop-ups to download the paper as PDF.'); return; }
+        w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+        <style>
+            * { box-sizing: border-box; }
+            body { margin: 0; font-family: 'Georgia', serif; color: #111; }
+            .paper-doc { padding: 1.5cm 2cm; line-height: 1.65; }
+            .paper-header { text-align: center; border-bottom: 2.5px solid #111; padding-bottom: 14px; margin-bottom: 16px; }
+            .paper-header h1 { font-size: 22px; margin: 0 0 6px; }
+            .paper-meta { font-size: 13px; color: #444; display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; font-family: sans-serif; }
+            .paper-instructions { background: #f4f4f4; border-left: 4px solid #111; padding: 10px 14px; margin-bottom: 18px; font-size: 13px; border-radius: 0 6px 6px 0; }
+            .paper-section { margin-bottom: 26px; page-break-inside: avoid; }
+            .paper-section-title { font-size: 15px; font-weight: 700; border-bottom: 1.5px solid #888; padding-bottom: 5px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+            .paper-section-marks { font-size: 12px; font-weight: 400; color: #555; text-transform: none; margin-left: 8px; }
+            .paper-section-instructions { color: #555; font-style: italic; font-size: 13px; margin: 0 0 10px; }
+            .paper-questions { padding-left: 22px; display: flex; flex-direction: column; gap: 14px; }
+            .paper-question { font-size: 14px; page-break-inside: avoid; }
+            .paper-q-text { font-weight: 500; margin-bottom: 6px; }
+            .paper-q-marks { color: #666; font-size: 12px; margin-left: 6px; }
+            .paper-blank { border-bottom: 1.5px solid #333; display: inline-block; min-width: 80px; margin-left: 4px; }
+            .paper-options { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; padding-left: 8px; }
+            .paper-option { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+            .paper-option-bubble { width: 14px; height: 14px; border: 1.5px solid #555; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+            .paper-answer-lines { display: flex; flex-direction: column; margin-top: 6px; padding-left: 8px; }
+            .paper-line { border-bottom: 1px solid #bbb; height: 26px; }
+            .essay-lines .paper-line { height: 30px; }
+            .paper-answer-key, .noprint { display: none !important; }
+            .paper-answer-page { page-break-before: always; }
+            .paper-answer-page h2 { text-align: center; }
+            .answer-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+            .answer-row { display: flex; gap: 8px; padding: 4px 8px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 13px; }
+            .answer-q-num { font-weight: 700; font-family: monospace; min-width: 36px; }
+            .answer-val { flex: 1; color: #059669; font-weight: 600; }
+            @page { margin: 1cm; }
+        </style></head><body>${node.innerHTML}
+        <script>window.onload = function(){ setTimeout(function(){ window.print(); }, 250); };<\/script>
+        </body></html>`);
+        w.document.close();
     };
 
     return (
