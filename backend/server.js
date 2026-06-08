@@ -683,6 +683,21 @@ Return ONLY raw JSON. No markdown, no extra text.`;
                                 ? `STRICT TEXTBOOK GRADING: You must grade ONLY based on the reference textbook provided above ("${textbookLabel}"). Do not award marks for knowledge not covered in that textbook. In feedback, refer to the textbook topics by name.`
                                 : (assignmentRubrics || (curriculumBlock ? 'Grade based on the curriculum context above.' : 'Use general academic standards.'));
 
+                            // Subject-specialised grading. Mathematics needs method
+                            // marks, equivalent-answer recognition and step checking.
+                            const isMaths = /\b(math|maths|mathematics|further math|pure math|applied math|calculus|algebra|geometry|trigonometry|arithmetic)\b/i.test(subject || '');
+                            const mathsGuidance = isMaths ? `
+
+MATHEMATICS GRADING MODE (this is a Maths paper — grade like a maths examiner):
+  • OCR carefully reads MATHEMATICAL NOTATION: fractions, exponents/superscripts (x², 10³), subscripts, square roots (√), ±, ×, ÷, ≤ ≥ ≠, π, °, integrals/sigma, indices, and multi-line working. Preserve the layout of each step.
+  • Award METHOD marks: give partial credit for correct working/steps even if the final answer is wrong.
+  • Accept mathematically EQUIVALENT answers as correct: e.g. 1/2 = 0.5 = 50%, 2(x+1) = 2x+2, √2 ≈ 1.41, x=2 vs x = 2.0, fractions vs decimals, different but valid algebraic forms.
+  • Check each STEP of the working, not just the final answer. Follow-through: if a student makes one slip but their subsequent steps are correct given that slip, only penalise the slip once (error carried forward).
+  • Distinguish a small ARITHMETIC slip (lose 1 mark) from a CONCEPTUAL error (lose more) — say which in the tip.
+  • Reward correct formula selection and correct substitution even before the final computation.
+  • Require units where relevant; note missing units but don't treat as a full error.
+  • In teacher_tip, point to the exact step that went wrong and show the correct step.` : '';
+
                             prompt = `You are MarkNex, an expert AI teacher grading assistant. Your task has TWO steps:
 
 STEP 1 — OCR (CRITICAL): Before grading, carefully read ALL text in the document.
@@ -692,7 +707,7 @@ STEP 1 — OCR (CRITICAL): Before grading, carefully read ALL text in the docume
   • If text is unclear, make a best-effort interpretation and note your uncertainty in confidence_score
 ${curriculumBlock}
 STEP 2 — GRADE: ${gradeScope}
-${assignmentRubrics ? '\n' + assignmentRubrics : ''}
+${assignmentRubrics ? '\n' + assignmentRubrics : ''}${mathsGuidance}
 
 Grading rules:
   • Be fair — partial credit where appropriate
