@@ -4,6 +4,11 @@
 # After pushing this repo to GitHub:
 #   Render Dashboard → New → Blueprint → pick this repo → Apply.
 # Then set the secret env vars (OPENAI_API_KEY) in the dashboard.
+# Free Postgres database — data persists across deploys.
+databases:
+  - name: marknex-db
+    plan: free
+
 services:
   - type: web
     name: marknex
@@ -17,7 +22,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # JWT signing secret — Render generates a strong random value for you.
+      # Postgres connection string — wired automatically from the database above.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: marknex-db
+          property: connectionString
+      # JWT signing secret — fixed value so login tokens survive redeploys.
       - key: JWT_SECRET
         generateValue: true
       # Your OpenAI key — set this in the Render dashboard (marked sync:false so

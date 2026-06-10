@@ -1,15 +1,26 @@
-const sqlite3 = require('sqlite3').verbose();
+// Dual-mode database: PostgreSQL in production (persists across deploys),
+// SQLite for local development. Set DATABASE_URL to use Postgres.
 const path = require('path');
+const USE_PG = !!process.env.DATABASE_URL;
 
-const dbPath = path.resolve(__dirname, 'marknex.db');
-
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-        console.error('Error opening database', err.message);
-    } else {
+let db;
+if (USE_PG) {
+    db = require('./pg-shim');
+    console.log('Connected to the PostgreSQL database.');
+    initSchema();
+} else {
+    const sqlite3 = require('sqlite3').verbose();
+    const dbPath = path.resolve(__dirname, 'marknex.db');
+    db = new sqlite3.Database(dbPath, (err) => {
+        if (err) { console.error('Error opening database', err.message); return; }
         console.log('Connected to the SQLite database.');
+        initSchema();
+    });
+}
 
-        // Create tables
+// Schema is identical for both engines — the Postgres shim translates the
+// SQLite-flavoured SQL on the fly.
+function initSchema() {
         db.serialize(() => {
             // Enforce referential integrity (off by default in SQLite) and use
             // WAL so background AI writes don't block dashboard reads.
@@ -314,7 +325,6 @@ const db = new sqlite3.Database(dbPath, (err) => {
             db.run(`CREATE INDEX IF NOT EXISTS idx_questions_assignment ON questions(assignment_id)`);
             db.run(`CREATE INDEX IF NOT EXISTS idx_assignments_teacher ON assignments(teacher_id)`);
         });
-    }
-});
+}
 
 module.exports = db;

@@ -1220,7 +1220,7 @@ app.post('/api/classes', verifyToken, (req, res) => {
     if (!name?.trim()) return res.status(400).json({ error: 'Class name required' });
     db.run(`INSERT INTO classes (teacher_id, name, grade, subject) VALUES (?, ?, ?, ?)`,
         [req.user.id, name.trim(), grade || '', subject || ''], function (err) {
-            if (err) return res.status(err.message.includes('UNIQUE') ? 409 : 500).json({ error: err.message });
+            if (err) return res.status(err.message.match(/UNIQUE|duplicate key/i) ? 409 : 500).json({ error: err.message });
             res.json({ id: this.lastID, name, grade, subject });
         });
 });
@@ -1266,7 +1266,7 @@ app.post('/api/classes/:id/students', verifyToken, async (req, res) => {
     db.run(`INSERT INTO students (class_id, student_id, name, email, username, password) VALUES (?, ?, ?, ?, ?, ?)`,
         [req.params.id, student_id.trim(), name || '', email || '', uname, hashedPw], function (err) {
             if (err) {
-                const dup = err.message.includes('UNIQUE');
+                const dup = err.message.match(/UNIQUE|duplicate key/i);
                 const msg = dup && err.message.includes('username') ? 'That username is already taken' : err.message;
                 return res.status(dup ? 409 : 500).json({ error: msg });
             }
@@ -1298,7 +1298,7 @@ app.put('/api/students/:id/credentials', verifyToken, async (req, res) => {
         }
         function handle(err) {
             if (err) {
-                const dup = err.message.includes('UNIQUE');
+                const dup = err.message.match(/UNIQUE|duplicate key/i);
                 return res.status(dup ? 409 : 500).json({ error: dup ? 'That username is already taken' : err.message });
             }
             res.json({ ok: true, username: username.trim() });
@@ -2163,7 +2163,7 @@ app.post('/api/options', verifyToken, (req, res) => {
         const next = (row && row.m != null ? row.m : -1) + 1;
         db.run(`INSERT INTO options (teacher_id, type, value, sort_order) VALUES (?, ?, ?, ?)`,
             [req.user.id, type, v, next], function (e) {
-                if (e) return res.status(e.message.includes('UNIQUE') ? 409 : 500).json({ error: e.message.includes('UNIQUE') ? 'That value already exists' : e.message });
+                if (e) return res.status(e.message.match(/UNIQUE|duplicate key/i) ? 409 : 500).json({ error: e.message.match(/UNIQUE|duplicate key/i) ? 'That value already exists' : e.message });
                 res.json({ id: this.lastID, type, value: v });
             });
     });
@@ -2173,7 +2173,7 @@ app.put('/api/options/:id', verifyToken, (req, res) => {
     const v = (req.body.value || '').trim();
     if (!v) return res.status(400).json({ error: 'Value cannot be empty' });
     db.run(`UPDATE options SET value = ? WHERE id = ? AND teacher_id = ?`, [v, req.params.id, req.user.id], function (e) {
-        if (e) return res.status(e.message.includes('UNIQUE') ? 409 : 500).json({ error: e.message.includes('UNIQUE') ? 'That value already exists' : e.message });
+        if (e) return res.status(e.message.match(/UNIQUE|duplicate key/i) ? 409 : 500).json({ error: e.message.match(/UNIQUE|duplicate key/i) ? 'That value already exists' : e.message });
         if (this.changes === 0) return res.status(404).json({ error: 'Option not found' });
         res.json({ message: 'Option updated' });
     });
