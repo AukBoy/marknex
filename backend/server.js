@@ -245,40 +245,41 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     const runs = GRADING_RUNS;
 
     // ── Single grading call ──────────────────────────────────────────────────
-    const callOnce = async (includeSystem) => {
-        const messages = includeSystem
-            ? [{ role: 'system', content: systemMsg }, { role: 'user', content: contentArray }]
-            : [{ role: 'user', content: contentArray }];
+    // CONSISTENCY: temperature 0 + a FIXED seed per run index makes every call
+    // deterministic and reproducible. Re-grading the same paper now yields the
+    // SAME score every time. Each run still uses a different seed so the ensemble
+    // is a genuine multi-read (robust), but the *set* of reads is reproducible.
+    const callOnce = async (seed) => {
+        const messages = [{ role: 'system', content: systemMsg }, { role: 'user', content: contentArray }];
 
         let response = await openai.chat.completions.create({
             model: gradeModel,
             messages,
             max_tokens: 2000,
             response_format: { type: 'json_object' },
-            // Slight temperature variation across passes so runs are genuinely
-            // independent reads rather than near-identical copies.
-            temperature: includeSystem ? 0.4 : 0.3,
+            temperature: 0,
+            seed,
         });
 
         let text = response.choices[0].message.content;
-
-        // If the model refused, retry once with the system safety message
         if (!text) {
+            // Refusal — retry once (same deterministic settings).
             response = await openai.chat.completions.create({
                 model: gradeModel,
-                messages: [{ role: 'system', content: systemMsg }, { role: 'user', content: contentArray }],
+                messages,
                 max_tokens: 2000,
                 response_format: { type: 'json_object' },
-                temperature: 0.3,
+                temperature: 0,
+                seed,
             });
             text = response.choices[0].message.content;
         }
         return text;
     };
 
-    // ── Fire all runs in parallel ────────────────────────────────────────────
+    // ── Fire all runs in parallel with fixed, distinct seeds ─────────────────
     const settled = await Promise.allSettled(
-        Array.from({ length: runs }, (_, i) => callOnce(i > 0))
+        Array.from({ length: runs }, (_, i) => callOnce(7001 + i * 1000))
     );
 
     // ── Parse results ────────────────────────────────────────────────────────
@@ -312,14 +313,20 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     // Single successful result — return as-is (no averaging needed)
     if (results.length === 1) return results[0];
 
-    // ── Average total_marks ──────────────────────────────────────────────────
-    const allMarks = results.map(r => parseFloat(r.total_marks) || 0);
-    const avgMarks = Math.round(allMarks.reduce((s, m) => s + m, 0) / results.length);
+    // Median is more stable than the mean — one outlier run can't drag the
+    // final score around, which keeps repeated gradings consistent.
+    const median = (arr) => {
+        const s = [...arr].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
 
-    // ── Average confidence_score ─────────────────────────────────────────────
-    const avgConf = Math.round(
-        results.reduce((s, r) => s + (parseFloat(r.confidence_score) || 0), 0) / results.length
-    );
+    // ── Median total_marks ───────────────────────────────────────────────────
+    const allMarks = results.map(r => parseFloat(r.total_marks) || 0);
+    const avgMarks = Math.round(median(allMarks));
+
+    // ── Median confidence_score ──────────────────────────────────────────────
+    const avgConf = Math.round(median(results.map(r => parseFloat(r.confidence_score) || 0)));
 
     // ── Merge question_analysis ──────────────────────────────────────────────
     // Build a map: q_num → { marks[], statuses[], tips[] }
@@ -334,8 +341,8 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     }
 
     const questionAnalysis = Object.entries(qMap).map(([q_num, data]) => {
-        // Average marks for this question
-        const avgQMarks = Math.round(data.marks.reduce((s, m) => s + m, 0) / data.marks.length);
+        // Median marks for this question (stable across re-grades)
+        const avgQMarks = Math.round(median(data.marks));
 
         // Majority-vote on status
         const statusVotes = {};
