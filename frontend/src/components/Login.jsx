@@ -8,21 +8,44 @@ function Login({ onLogin }) {
     const [isLogin, setIsLogin]   = useState(true);   // teacher can also sign up
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [inviteCode, setInviteCode] = useState('');
     const [error, setError]       = useState(null);
     const [loading, setLoading]   = useState(false);
+    // Recovery-code flow
+    const [recoveryCode, setRecoveryCode] = useState(null); // shown once after signup
+    const [forgotMode, setForgotMode]     = useState(false);
+    const [resetCode, setResetCode]       = useState('');
+    const [resetDone, setResetDone]       = useState(false);
 
-    const reset = () => { setUsername(''); setPassword(''); setError(null); };
+    const reset = () => {
+        setUsername(''); setPassword(''); setInviteCode(''); setError(null);
+        setRecoveryCode(null); setForgotMode(false); setResetCode(''); setResetDone(false);
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError(null);
         try {
+            if (portal === 'teacher' && forgotMode) {
+                // Password reset with the recovery code from signup
+                await api.post('/auth/reset-password', { username, recovery_code: resetCode, new_password: password });
+                setResetDone(true);
+                setForgotMode(false);
+                setIsLogin(true);
+                setPassword('');
+                return;
+            }
+
             if (portal === 'teacher' && !isLogin) {
-                // Teacher self-registration
-                await api.post('/auth/register', { username, password });
-                const res = await api.post('/auth/login', { username, password, portal: 'teacher' });
-                onLogin(res.data.token, true, res.data.role);
+                // Teacher self-registration — backend returns a one-time recovery
+                // code which we must show before logging the user in.
+                const reg = await api.post('/auth/register', { username, password, invite_code: inviteCode });
+                setRecoveryCode(reg.data.recovery_code || null);
+                if (!reg.data.recovery_code) {
+                    const res = await api.post('/auth/login', { username, password, portal: 'teacher' });
+                    onLogin(res.data.token, true, res.data.role);
+                }
                 return;
             }
 
@@ -31,10 +54,20 @@ function Login({ onLogin }) {
             const res = await api.post('/auth/login', { username, password, portal });
             onLogin(res.data.token, false, res.data.role);
         } catch (err) {
-            setError(err.response?.data?.error || 'Login failed');
+            setError(err.response?.data?.error || (forgotMode ? 'Reset failed' : 'Login failed'));
         } finally {
             setLoading(false);
         }
+    };
+
+    // After signup we hold the user here until they confirm they saved the code.
+    const continueAfterSignup = async () => {
+        setLoading(true);
+        try {
+            const res = await api.post('/auth/login', { username, password, portal: 'teacher' });
+            onLogin(res.data.token, true, res.data.role);
+        } catch { setError('Account created — please sign in.'); setRecoveryCode(null); setIsLogin(true); }
+        finally { setLoading(false); }
     };
 
     // ── Step 1: choose portal ──────────────────────────────────────
@@ -94,11 +127,13 @@ function Login({ onLogin }) {
                         {isTeacher ? <BookOpen size={28} color="#fff" /> : <GraduationCap size={28} color="#fff" />}
                     </div>
                     <h2 className="login-title logo-text" style={{ margin: 0, color: accent }}>
-                        {isTeacher ? 'Teacher' : 'Student'} {isLogin ? 'Login' : 'Sign Up'}
+                        {isTeacher ? 'Teacher' : 'Student'} {forgotMode ? 'Password Reset' : (isLogin ? 'Login' : 'Sign Up')}
                     </h2>
                     <p style={{ color: 'var(--text-muted)', marginTop: '0.35rem', fontSize: '0.9rem' }}>
                         {isTeacher
-                            ? (isLogin ? 'Sign in to your teacher account' : 'Create a new teacher account')
+                            ? (forgotMode
+                                ? 'Enter the recovery code you saved at signup'
+                                : (isLogin ? 'Sign in to your teacher account' : 'Create a new teacher account'))
                             : 'Use the username & password your teacher gave you'}
                     </p>
                 </div>
@@ -109,6 +144,34 @@ function Login({ onLogin }) {
                     </div>
                 )}
 
+                {resetDone && (
+                    <div style={{ backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#059669', padding: '0.85rem', borderRadius: '8px', marginBottom: '1.25rem', textAlign: 'center', fontSize: '0.9rem', fontWeight: 600 }}>
+                        ✅ Password reset! Sign in with your new password.
+                    </div>
+                )}
+
+                {/* One-time recovery code screen — shown once, right after signup */}
+                {recoveryCode ? (
+                    <div style={{ textAlign: 'center' }}>
+                        <p style={{ fontWeight: 600, marginBottom: '0.5rem' }}>🔑 Save your recovery code</p>
+                        <div style={{
+                            fontSize: '1.8rem', fontWeight: 800, letterSpacing: '0.15em',
+                            background: 'rgba(79,70,229,0.08)', border: '2px dashed var(--primary)',
+                            borderRadius: '12px', padding: '1rem', margin: '0 0 0.75rem',
+                            fontFamily: 'monospace', userSelect: 'all',
+                        }}>
+                            {recoveryCode}
+                        </div>
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+                            This is the <strong>only way to reset your password</strong> if you forget it
+                            (there is no email recovery). Write it down somewhere safe — it will not be shown again.
+                        </p>
+                        <button className="btn btn-primary" style={{ width: '100%', background: accent, borderColor: accent }}
+                            onClick={continueAfterSignup} disabled={loading}>
+                            {loading ? 'Signing in…' : "I saved it — continue"}
+                        </button>
+                    </div>
+                ) : (
                 <form onSubmit={handleSubmit}>
                     <div className="form-group">
                         <label className="form-label" htmlFor="username">Username</label>
@@ -124,8 +187,23 @@ function Login({ onLogin }) {
                         />
                     </div>
 
+                    {forgotMode && (
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="resetcode">Recovery Code</label>
+                            <input
+                                className="form-input"
+                                type="text"
+                                id="resetcode"
+                                value={resetCode}
+                                onChange={(e) => setResetCode(e.target.value)}
+                                placeholder="e.g., 9F3A21BC"
+                                required
+                            />
+                        </div>
+                    )}
+
                     <div className="form-group">
-                        <label className="form-label" htmlFor="password">Password</label>
+                        <label className="form-label" htmlFor="password">{forgotMode ? 'New Password' : 'Password'}</label>
                         <input
                             className="form-input"
                             type="password"
@@ -137,27 +215,63 @@ function Login({ onLogin }) {
                         />
                     </div>
 
+                    {/* Invite code — only for teacher signup; required when the
+                        deployment has SIGNUP_CODE configured */}
+                    {isTeacher && !isLogin && !forgotMode && (
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="invite">Invite Code</label>
+                            <input
+                                className="form-input"
+                                type="text"
+                                id="invite"
+                                value={inviteCode}
+                                onChange={(e) => setInviteCode(e.target.value)}
+                                placeholder="From your administrator (if required)"
+                            />
+                        </div>
+                    )}
+
                     <button
                         type="submit"
                         className="btn btn-primary"
                         style={{ width: '100%', marginTop: '1rem', background: accent, borderColor: accent }}
                         disabled={loading}>
-                        {loading ? 'Authenticating…' : (isLogin ? 'Sign In' : 'Create Account')}
+                        {loading ? 'Working…' : (forgotMode ? 'Reset Password' : (isLogin ? 'Sign In' : 'Create Account'))}
                     </button>
                 </form>
+                )}
 
                 {/* Only teachers can self-register; students are created by teachers */}
-                {isTeacher && (
+                {isTeacher && !recoveryCode && (
                     <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-                        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                            {isLogin ? "Don't have an account? " : 'Already have an account? '}
+                        {forgotMode ? (
                             <button
                                 type="button"
-                                onClick={() => { setIsLogin(!isLogin); setError(null); }}
-                                style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontWeight: 600, padding: 0 }}>
-                                {isLogin ? 'Sign up' : 'Sign in'}
+                                onClick={() => { setForgotMode(false); setError(null); }}
+                                style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontWeight: 600, padding: 0, fontSize: '0.9rem' }}>
+                                ← Back to sign in
                             </button>
-                        </p>
+                        ) : (
+                            <>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '0.4rem' }}>
+                                    {isLogin ? "Don't have an account? " : 'Already have an account? '}
+                                    <button
+                                        type="button"
+                                        onClick={() => { setIsLogin(!isLogin); setError(null); }}
+                                        style={{ background: 'none', border: 'none', color: accent, cursor: 'pointer', fontWeight: 600, padding: 0 }}>
+                                        {isLogin ? 'Sign up' : 'Sign in'}
+                                    </button>
+                                </p>
+                                {isLogin && (
+                                    <button
+                                        type="button"
+                                        onClick={() => { setForgotMode(true); setError(null); setResetDone(false); }}
+                                        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, fontSize: '0.82rem', textDecoration: 'underline' }}>
+                                        Forgot password?
+                                    </button>
+                                )}
+                            </>
+                        )}
                     </div>
                 )}
 

@@ -418,7 +418,31 @@ const app = express();
 const corsOrigin = process.env.CORS_ORIGIN;
 app.use(cors({ origin: corsOrigin ? corsOrigin.split(',').map(s => s.trim()) : true }));
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serve uploaded files: disk first (fast), then the database copy. The disk is
+// wiped on every redeploy of the free tier, so the DB copy is what keeps old
+// answer papers viewable in reports.
+app.get('/uploads/:name', (req, res) => {
+    const name = path.basename(req.params.name); // no traversal
+    const diskPath = path.join(__dirname, 'uploads', name);
+    if (fs.existsSync(diskPath)) return res.sendFile(diskPath);
+    db.get('SELECT mime, data FROM stored_files WHERE filename = ?', [name], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: 'File not found' });
+        res.set('Content-Type', row.mime || 'application/octet-stream');
+        res.send(Buffer.from(row.data, 'base64'));
+    });
+});
+
+// Persist an uploaded file into the DB (base64). Capped at 8 MB raw to protect
+// the free 1 GB Postgres allowance; larger files stay disk-only.
+function persistFileToDB(diskPath, storedName, mime) {
+    try {
+        const stat = fs.statSync(diskPath);
+        if (stat.size > 8 * 1024 * 1024) { console.warn(`[Files] ${storedName} too large to persist (${stat.size}B)`); return; }
+        const data = fs.readFileSync(diskPath).toString('base64');
+        db.run('INSERT OR IGNORE INTO stored_files (filename, mime, data) VALUES (?, ?, ?)',
+            [storedName, mime, data], (e) => { if (e) console.warn('[Files] persist failed:', e.message); });
+    } catch (e) { console.warn('[Files] persist error:', e.message); }
+}
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey123';
@@ -495,27 +519,70 @@ const verifyToken = (req, res, next) => {
     }
 };
 
-// 1. Register
-app.post('/api/auth/register', async (req, res) => {
-    const { username, password } = req.body;
+// ── Auth rate limiting ───────────────────────────────────────────────────────
+// Simple in-memory limiter: max 20 auth attempts per IP per 15 minutes. Blocks
+// password brute-forcing and bulk signups that would burn the OpenAI budget.
+const authAttempts = new Map(); // ip → { count, resetAt }
+function authRateLimit(req, res, next) {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    let entry = authAttempts.get(ip);
+    if (!entry || now > entry.resetAt) { entry = { count: 0, resetAt: now + 15 * 60 * 1000 }; authAttempts.set(ip, entry); }
+    entry.count++;
+    if (authAttempts.size > 5000) authAttempts.clear(); // crude memory cap
+    if (entry.count > 20) return res.status(429).json({ error: 'Too many attempts. Please wait 15 minutes and try again.' });
+    next();
+}
+
+// 1. Register — gated by an invite code when SIGNUP_CODE is set (protects a
+// public deployment from strangers signing up and spending the OpenAI budget).
+// Returns a one-time recovery code the teacher must save for password resets.
+app.post('/api/auth/register', authRateLimit, async (req, res) => {
+    const { username, password, invite_code } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
+    if (process.env.SIGNUP_CODE && invite_code !== process.env.SIGNUP_CODE) {
+        return res.status(403).json({ error: 'Invalid invite code. Ask the administrator for the signup code.' });
+    }
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
+        const recoveryCode = require('crypto').randomBytes(4).toString('hex').toUpperCase(); // e.g. 9F3A21BC
+        const hashedRecovery = await bcrypt.hash(recoveryCode, 10);
         // Role is intentionally NOT taken from the client to prevent privilege escalation.
-        // Admin accounts must be provisioned directly in the database.
-        db.run('INSERT INTO users (username, password, role) VALUES (?, ?, ?)', [username, hashedPassword, 'Teacher'], function (err) {
+        db.run('INSERT INTO users (username, password, role, recovery_code) VALUES (?, ?, ?, ?)',
+            [username, hashedPassword, 'Teacher', hashedRecovery], function (err) {
             if (err) return res.status(400).json({ error: 'User already exists' });
-            res.json({ message: 'User created successfully', id: this.lastID });
+            res.json({ message: 'User created successfully', id: this.lastID, recovery_code: recoveryCode });
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
+// 1b. Password reset using the recovery code from signup (no email needed).
+app.post('/api/auth/reset-password', authRateLimit, async (req, res) => {
+    const { username, recovery_code, new_password } = req.body;
+    if (!username || !recovery_code || !new_password)
+        return res.status(400).json({ error: 'Username, recovery code and new password are required' });
+    db.get('SELECT * FROM users WHERE username = ?', [username], async (err, user) => {
+        if (err || !user || !user.recovery_code)
+            return res.status(400).json({ error: 'Invalid username or recovery code' });
+        const ok = await bcrypt.compare(recovery_code.trim().toUpperCase(), user.recovery_code);
+        if (!ok) return res.status(400).json({ error: 'Invalid username or recovery code' });
+        const hashed = await bcrypt.hash(new_password, 10);
+        db.run('UPDATE users SET password = ? WHERE id = ?', [hashed, user.id], (e) =>
+            e ? res.status(500).json({ error: e.message }) : res.json({ message: 'Password reset. You can now sign in.' }));
+    });
+});
+
+// Health check — reports which database engine is live (verifies Postgres).
+app.get('/api/health', (req, res) => {
+    res.json({ ok: true, db: process.env.DATABASE_URL ? 'postgres' : 'sqlite' });
+});
+
 // 2. Login. The `portal` field ('teacher' | 'student') tells us which account
 // type to authenticate, so a teacher and a student can share a username without
 // colliding. Defaults to checking teachers then students for backward-compat.
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', authRateLimit, (req, res) => {
     const { username, password, portal } = req.body;
 
     const tryStudent = () => {
@@ -577,6 +644,9 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
                     return res.status(500).json({ error: err.message });
                 }
                 const scriptId = this.lastID;
+
+                // Keep a DB copy so the paper stays viewable after redeploys.
+                persistFileToDB(file.path, file.filename, getMimeType(file.path));
 
                 // Async AI evaluation
                 (async () => {

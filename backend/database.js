@@ -34,6 +34,19 @@ function initSchema() {
                 password TEXT,
                 role TEXT
             )`);
+            // Password recovery: a one-time code shown at signup (stored hashed)
+            // lets teachers reset a forgotten password without an email system.
+            db.run(`ALTER TABLE users ADD COLUMN recovery_code TEXT`, () => {});
+
+            // Uploaded answer-paper files, stored in the DB (base64) so they
+            // survive redeploys — the server's local disk is ephemeral on the
+            // free hosting tier.
+            db.run(`CREATE TABLE IF NOT EXISTS stored_files (
+                filename TEXT PRIMARY KEY,
+                mime TEXT,
+                data TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`);
 
             // Assignments table
             db.run(`CREATE TABLE IF NOT EXISTS assignments (

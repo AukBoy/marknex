@@ -34,3 +34,7 @@ services:
       # it is NOT stored in the repo).
       - key: OPENAI_API_KEY
         sync: false
+      # Optional invite code: when set, new teacher signups must supply it.
+      # Protects a public URL from strangers consuming the OpenAI budget.
+      - key: SIGNUP_CODE
+        sync: false
