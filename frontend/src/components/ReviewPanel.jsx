@@ -310,6 +310,22 @@ function ReviewPanel() {
                     <div>
                         <h3 style={{ marginTop: 0 }}>Evaluate Details</h3>
 
+                        {/* Two-stage grading: show exactly what the AI read from the
+                            handwriting so the teacher can verify the OCR. */}
+                        {script.transcription && (
+                            <details style={{ marginBottom: '1rem', background: 'rgba(79,70,229,0.05)', border: '1px solid rgba(79,70,229,0.2)', borderRadius: 'var(--radius)', padding: '0.75rem 1rem' }}>
+                                <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                    <FileText size={15} /> What the AI read from the handwriting
+                                </summary>
+                                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: '0.88rem', color: 'var(--text-main)', margin: '0.75rem 0 0', lineHeight: 1.5 }}>
+                                    {script.transcription}
+                                </pre>
+                                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '0.6rem 0 0' }}>
+                                    💡 If this misread the handwriting, that's likely why the marks are off — correct the marks below.
+                                </p>
+                            </details>
+                        )}
+
                         <form onSubmit={handleSave} style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
 
                             <div className="form-group">

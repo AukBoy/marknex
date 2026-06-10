@@ -79,6 +79,9 @@ const db = new sqlite3.Database(dbPath, (err) => {
             db.run(`ALTER TABLE scripts ADD COLUMN ai_total_marks INTEGER`, () => {});
             db.run(`ALTER TABLE scripts ADD COLUMN ai_confidence REAL`, () => {});
             db.run(`ALTER TABLE scripts ADD COLUMN reviewed_at DATETIME`, () => {});
+            // Two-stage grading: the verbatim transcription of what the AI read
+            // from the handwriting (Stage 1). Lets teachers verify the OCR.
+            db.run(`ALTER TABLE scripts ADD COLUMN transcription TEXT`, () => {});
 
             // Settings table
             db.run(`CREATE TABLE IF NOT EXISTS settings (

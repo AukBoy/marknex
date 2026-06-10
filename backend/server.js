@@ -241,6 +241,38 @@ async function buildOCRContentArray(filePath, promptText) {
 //
 const GRADING_RUNS = Math.min(5, Math.max(1, parseInt(process.env.GRADING_RUNS || '3', 10)));
 
+// STAGE 1 of two-stage grading: transcribe the handwriting ONCE, deterministically.
+// Grading then anchors to this text so repeated reads don't drift the score, and
+// the teacher can see exactly what the AI read.
+async function transcribePaper(filePath, gradeModel) {
+    const prompt = `You are a precise transcription assistant. Read this student's answer paper (handwritten or printed) and transcribe EXACTLY what the student wrote — word for word.
+
+RULES:
+- Transcribe every question's answer. Keep question numbers (Q1, Q2, …) if present.
+- Preserve mathematical notation, working steps, units and line breaks.
+- Do NOT grade, correct, judge or add anything — transcribe only what is actually written.
+- For anything you genuinely cannot read, write [illegible].
+
+Return ONLY raw JSON:
+{ "transcription": "Q1: <verbatim>\\nQ2: <verbatim>\\n…", "ocr_confidence": 0-100 }`;
+
+    const content = await buildOCRContentArray(filePath, prompt);
+    const resp = await openai.chat.completions.create({
+        model: gradeModel,
+        messages: [{ role: 'user', content }],
+        max_tokens: 3000,
+        response_format: { type: 'json_object' },
+        temperature: 0,
+        seed: 42,
+    });
+    let text = (resp.choices[0].message.content || '{}').trim();
+    if (text.startsWith('```json')) text = text.slice(7).trim();
+    else if (text.startsWith('```')) text = text.slice(3).trim();
+    if (text.endsWith('```')) text = text.slice(0, -3).trim();
+    try { const j = JSON.parse(text); return { transcription: j.transcription || '', ocrConfidence: j.ocr_confidence ?? 70 }; }
+    catch { return { transcription: '', ocrConfidence: 0 }; }
+}
+
 async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     const runs = GRADING_RUNS;
 
@@ -781,9 +813,23 @@ Return ONLY raw JSON. No markdown.`;
                             try { aiData = JSON.parse(t); }
                             catch { const m = t.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI returned a non-JSON response.'); aiData = JSON.parse(m[0]); }
                         } else {
-                            // Essay: fire GRADING_RUNS times in parallel and average
+                            // ── TWO-STAGE GRADING ────────────────────────────────
+                            // Stage 1: transcribe the handwriting once (deterministic).
+                            let transcription = '', ocrConfidence = 0;
+                            try {
+                                ({ transcription, ocrConfidence } = await transcribePaper(file.path, gradeModel));
+                                console.log(`[TwoStage] Transcribed ${transcription.length} chars (OCR conf ${ocrConfidence}%) for script ${scriptId}`);
+                            } catch (tErr) { console.warn('[TwoStage] Transcription failed:', tErr.message); }
+
+                            // Stage 2: anchor grading to that transcription so the
+                            // score doesn't drift between reads. Images stay attached
+                            // so coordinate-based highlighting still works.
+                            if (transcription && transcription.length > 15) {
+                                contentArray[0].text += `\n\n━━━ VERIFIED TRANSCRIPTION (authoritative reading of the handwriting — grade against this exact text) ━━━\n${transcription}\n━━━ END TRANSCRIPTION ━━━`;
+                            }
                             console.log(`[Ensemble] Starting ${GRADING_RUNS}× grading for script ${scriptId}`);
                             aiData = await gradeWithEnsemble(contentArray, systemMsg, gradeModel);
+                            if (aiData) aiData._transcription = transcription;
                             if (!aiData) {
                                 db.run(
                                     `UPDATE scripts SET status = 'Needs Review', total_marks = 0, confidence_score = 0,
@@ -865,8 +911,8 @@ Return ONLY raw JSON. No markdown.`;
                             const status = score < threshold ? 'Needs Review' : 'Evaluated';
                             const flags = score < threshold ? 'Low Confidence' : 'AI Verified';
                             db.run(
-                                `UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?, confidence_score = ?, flags = ?, report = ?, corrections = ?, question_analysis = ?, ai_total_marks = ?, ai_confidence = ? WHERE id = ?`,
-                                [status, aiData.total_marks, maxTotalMarks, score, flags, aiData.report, correctionsStr, questionAnalysisStr, aiData.total_marks, score, scriptId]
+                                `UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?, confidence_score = ?, flags = ?, report = ?, corrections = ?, question_analysis = ?, ai_total_marks = ?, ai_confidence = ?, transcription = ? WHERE id = ?`,
+                                [status, aiData.total_marks, maxTotalMarks, score, flags, aiData.report, correctionsStr, questionAnalysisStr, aiData.total_marks, score, aiData._transcription || null, scriptId]
                             );
                         });
                     } catch (err) {
