@@ -398,12 +398,17 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     const ensembleNote = `[Ensemble ${results.length}× — runs: ${marksPerRun} → avg ${avgMarks}${spread > 2 ? `, spread ${spread} marks` : ''}]`;
     const report = `${bestRun.report || ''} ${ensembleNote}`.trim();
 
+    // The paper's own maximum (AI-detected) — median across runs.
+    const maxVals = results.map(r => parseFloat(r.paper_max_marks)).filter(v => !isNaN(v) && v > 0);
+    const paperMax = maxVals.length ? Math.round(median(maxVals)) : undefined;
+
     return {
         total_marks: avgMarks,
         confidence_score: avgConf,
         report,
         corrections: bestRun.corrections || [],
         question_analysis: questionAnalysis,
+        ...(paperMax ? { paper_max_marks: paperMax } : {}),
     };
 }
 
@@ -597,6 +602,10 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
                                 maxTotalMarks = questions.reduce((sum, q) => sum + q.max_marks, 0);
                             }
                         }
+                        // True when a linked assignment defines the paper total; otherwise
+                        // maxTotalMarks is just the default 10 and the AI should detect the
+                        // paper's real maximum (e.g. a 15-question paper is out of 15).
+                        const maxIsExplicit = !!(assignment_id && questions && questions.length > 0);
 
                         // ── Load curriculum context ──────────────────────────────────────
                         // Priority:
@@ -756,7 +765,11 @@ Grading rules:
 ${textbookStrictMode ? `  • IMPORTANT: Only award marks for content that appears in the reference textbook "${textbookLabel}"` : ''}
 
 Return a JSON object with EXACTLY these keys:
-- "total_marks": integer score out of ${maxTotalMarks}
+${maxIsExplicit
+    ? `- "total_marks": integer score out of ${maxTotalMarks}
+- "paper_max_marks": ${maxTotalMarks}`
+    : `- "paper_max_marks": the TOTAL marks this paper is actually out of — count the questions and their mark allocations (e.g. 15 one-mark questions → 15). Do NOT assume 10.
+- "total_marks": integer score out of paper_max_marks (never exceeding it)`}
 - "confidence_score": 0-100 (OCR confidence + grading certainty combined)
 - "report": One-sentence summary of the student's overall performance
 - "corrections": Array of mistakes, each with:
@@ -935,6 +948,20 @@ Return ONLY raw JSON. No markdown.`;
                                 aiData.question_analysis = questionAnalysis;
                             }
                         }
+
+                        // Use the AI-detected paper total when no assignment fixed one,
+                        // and never let the score exceed the maximum (no more 15/10).
+                        if (!isMCQ && !maxIsExplicit) {
+                            const detectedMax = parseInt(aiData.paper_max_marks, 10);
+                            if (!isNaN(detectedMax) && detectedMax > 0 && detectedMax <= 500) {
+                                maxTotalMarks = detectedMax;
+                            } else {
+                                // No usable max from the AI — derive from per-question marks if present.
+                                const qSum = (aiData.question_analysis || []).reduce((s, q) => s + (parseFloat(q.marks_awarded) || 0), 0);
+                                if (qSum > maxTotalMarks) maxTotalMarks = Math.max(qSum, parseFloat(aiData.total_marks) || 0);
+                            }
+                        }
+                        aiData.total_marks = Math.min(parseFloat(aiData.total_marks) || 0, maxTotalMarks);
 
                         const correctionsStr = JSON.stringify(aiData.corrections || []);
                         const questionAnalysisStr = JSON.stringify(aiData.question_analysis || []);
