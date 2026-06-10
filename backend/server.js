@@ -779,24 +779,32 @@ Return ONLY raw JSON. No markdown.`;
                         // For essay: GRADING_RUNS parallel calls (default 3) then average.
                         let aiData;
                         if (isMCQ) {
-                            // Single OCR pass is enough; scoring is exact (key lookup)
-                            let response = await openai.chat.completions.create({
-                                model: gradeModel,
-                                messages: [{ role: "user", content: contentArray }],
-                                max_tokens: 2000,
-                                response_format: { type: "json_object" }
-                            });
-                            let rawText = response.choices[0].message.content;
-                            if (!rawText) {
-                                response = await openai.chat.completions.create({
+                            // MCQ OCR consistency: read the sheet 3× deterministically
+                            // (temp 0, fixed seeds) and MAJORITY-VOTE each question's
+                            // answer. A single read at default temperature was the
+                            // cause of same-paper-different-score results.
+                            const readOnce = async (seed) => {
+                                const response = await openai.chat.completions.create({
                                     model: gradeModel,
                                     messages: [{ role: "system", content: systemMsg }, { role: "user", content: contentArray }],
                                     max_tokens: 2000,
-                                    response_format: { type: "json_object" }
+                                    response_format: { type: "json_object" },
+                                    temperature: 0,
+                                    seed,
                                 });
-                                rawText = response.choices[0].message.content;
-                            }
-                            if (!rawText) {
+                                let t = (response.choices[0].message.content || '').trim();
+                                if (t.startsWith('```json')) t = t.slice(7).trim();
+                                else if (t.startsWith('```')) t = t.slice(3).trim();
+                                if (t.endsWith('```')) t = t.slice(0, -3).trim();
+                                try { return JSON.parse(t); }
+                                catch { const m = t.match(/\{[\s\S]*\}/); return m ? JSON.parse(m[0]) : null; }
+                            };
+
+                            const reads = (await Promise.allSettled([readOnce(101), readOnce(202), readOnce(303)]))
+                                .filter(r => r.status === 'fulfilled' && r.value && r.value.student_answers)
+                                .map(r => r.value);
+
+                            if (reads.length === 0) {
                                 db.run(
                                     `UPDATE scripts SET status = 'Needs Review', total_marks = 0, confidence_score = 0,
                                      flags = 'Manual Review Needed',
@@ -806,12 +814,37 @@ Return ONLY raw JSON. No markdown.`;
                                 );
                                 return;
                             }
-                            let t = rawText.trim();
-                            if (t.startsWith('```json')) t = t.slice(7).trim();
-                            else if (t.startsWith('```')) t = t.slice(3).trim();
-                            if (t.endsWith('```')) t = t.slice(0, -3).trim();
-                            try { aiData = JSON.parse(t); }
-                            catch { const m = t.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI returned a non-JSON response.'); aiData = JSON.parse(m[0]); }
+
+                            // Majority-vote each question's detected answer across reads.
+                            const allQs = new Set();
+                            reads.forEach(r => Object.keys(r.student_answers || {}).forEach(q => allQs.add(q)));
+                            const votedAnswers = {};
+                            for (const q of allQs) {
+                                const votes = {};
+                                let sample = null;
+                                for (const r of reads) {
+                                    const entry = r.student_answers?.[q];
+                                    const ans = (typeof entry === 'object' ? entry?.answer : entry);
+                                    if (ans === undefined || ans === null) continue;
+                                    const key = String(ans).trim().toUpperCase();
+                                    votes[key] = (votes[key] || 0) + 1;
+                                    if (!sample && typeof entry === 'object') sample = entry;
+                                }
+                                const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+                                if (winner) {
+                                    votedAnswers[q] = sample
+                                        ? { ...sample, answer: winner[0] }
+                                        : { answer: winner[0] };
+                                }
+                            }
+
+                            const medianOf = (arr) => { const s = [...arr].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+                            aiData = {
+                                ...reads[0],
+                                student_answers: votedAnswers,
+                                confidence_score: Math.round(medianOf(reads.map(r => parseFloat(r.confidence_score) || 0))),
+                            };
+                            console.log(`[MCQ Ensemble] ${reads.length}/3 reads OK, ${allQs.size} questions, majority-voted for script ${scriptId}`);
                         } else {
                             // ── TWO-STAGE GRADING ────────────────────────────────
                             // Stage 1: transcribe the handwriting once (deterministic).
