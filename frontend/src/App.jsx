@@ -53,6 +53,18 @@ function App() {
     if (token) setAuth(true);
   }, []);
 
+  // localStorage is shared across tabs, so logging into a different account in
+  // another tab silently switches THIS tab's data too — which looks like a
+  // cross-account leak. Reload when the session changes elsewhere so the UI
+  // always matches the actually-active account.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === 'token' || e.key === 'role') window.location.reload();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const handleLogin = (token, isNewUser = false, userRole = 'Teacher') => {
     localStorage.setItem('token', token);
     localStorage.setItem('role', userRole);
