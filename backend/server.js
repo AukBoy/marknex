@@ -1089,16 +1089,53 @@ Rules:
 
         const contentArray = await buildOCRContentArray(file.path, prompt);
 
-        const response = await openai.chat.completions.create({
-            model: process.env.FINE_TUNED_MODEL_ID || "gpt-4o",
-            messages: [{ role: "user", content: contentArray }],
-            max_tokens: 2000
-        });
+        // Deterministic 3-read majority vote — the SAME seeds the student-answer
+        // reader uses, so grading a paper against a key extracted from the same
+        // document yields identical reads (a single read at default temperature
+        // previously made key vs. answers disagree on ambiguous marks).
+        const readOnce = async (seed) => {
+            const response = await openai.chat.completions.create({
+                model: process.env.FINE_TUNED_MODEL_ID || "gpt-4o",
+                messages: [{ role: "user", content: contentArray }],
+                max_tokens: 2000,
+                temperature: 0,
+                seed,
+            });
+            let t = (response.choices[0].message.content || '').trim();
+            if (t.startsWith('```')) t = t.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+            // Parse "1. A" lines → { '1': 'A' }
+            const map = {};
+            t.split('\n').forEach(line => {
+                const m = line.trim().match(/^(\d+)\s*[\.\-\):]?\s*([A-Ea-e])\s*$/);
+                if (m) map[m[1]] = m[2].toUpperCase();
+            });
+            return map;
+        };
 
-        let text = response.choices[0].message.content;
-        if (!text) return res.status(422).json({ error: response.choices[0].message.refusal || 'Could not read the answer key from this file.' });
-        text = text.trim();
-        if (text.startsWith('```')) text = text.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+        const reads = (await Promise.allSettled([readOnce(101), readOnce(202), readOnce(303)]))
+            .filter(r => r.status === 'fulfilled' && Object.keys(r.value).length > 0)
+            .map(r => r.value);
+
+        if (reads.length === 0)
+            return res.status(422).json({ error: 'Could not read the answer key from this file.' });
+
+        // Majority-vote each question's letter across the reads.
+        const allQs = new Set();
+        reads.forEach(m => Object.keys(m).forEach(q => allQs.add(q)));
+        const finalKey = {};
+        for (const q of allQs) {
+            const votes = {};
+            reads.forEach(m => { if (m[q]) votes[m[q]] = (votes[m[q]] || 0) + 1; });
+            const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+            if (winner) finalKey[q] = winner[0];
+        }
+
+        const text = Object.keys(finalKey)
+            .sort((a, b) => Number(a) - Number(b))
+            .map(q => `${q}. ${finalKey[q]}`)
+            .join('\n');
+
+        console.log(`[MCQ Key] ${reads.length}/3 reads OK, ${Object.keys(finalKey).length} questions majority-voted`);
         res.json({ extracted_key: text });
     } catch (err) {
         console.error("MCQ Extract Error:", err);
@@ -1133,7 +1170,9 @@ Rules:
         const response = await openai.chat.completions.create({
             model: process.env.FINE_TUNED_MODEL_ID || "gpt-4o",
             messages: [{ role: "user", content: contentArray }],
-            max_tokens: 3000
+            max_tokens: 3000,
+            temperature: 0,
+            seed: 42,
         });
 
         let text = response.choices[0].message.content;
