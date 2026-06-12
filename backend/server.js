@@ -8,10 +8,20 @@ const path = require('path');
 const db = require('./database');
 
 const fs = require('fs');
+const crypto = require('crypto');
 const pdfParse = require('pdf-parse');
 const sharp = require('sharp');
 const { fromPath } = require('pdf2pic');
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.mjs');
+const { createCanvas } = require('@napi-rs/canvas');
 const { OpenAI } = require('openai');
+
+// Canvas factory for pdfjs-dist server-side rendering (pure JS, no GraphicsMagick)
+class NodeCanvasFactory {
+    create(w, h)  { const canvas = createCanvas(w, h); return { canvas, context: canvas.getContext('2d') }; }
+    reset(c, w, h){ c.canvas.width = w; c.canvas.height = h; }
+    destroy()     {}
+}
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -81,49 +91,80 @@ async function preprocessImageForOCR(filePath) {
  * to stay inside GPT-4o's token budget).
  */
 async function pdfToImages(filePath) {
+    // Strategy 1: pdf2pic (requires GraphicsMagick — fast, high quality)
+    try {
+        const images = await pdfToImagesViaPdf2pic(filePath);
+        if (images.length > 0) return images;
+    } catch (err) {
+        console.warn(`[OCR] pdf2pic unavailable (${err.message}), trying pdfjs-dist fallback`);
+    }
+
+    // Strategy 2: pdfjs-dist + @napi-rs/canvas (pure JS, no native deps)
+    return pdfToImagesViaPdfjs(filePath);
+}
+
+async function pdfToImagesViaPdf2pic(filePath) {
     const outDir = path.join(path.dirname(filePath), `pdf_pages_${Date.now()}`);
     fs.mkdirSync(outDir, { recursive: true });
 
     try {
         const converter = fromPath(filePath, {
-            density: 200,          // DPI — higher = clearer but larger file
+            density: 200,
             saveFilename: 'page',
             savePath: outDir,
             format: 'jpeg',
-            width: 2048,           // Max width — enough for GPT-4o high detail
+            width: 2048,
             height: 2048,
         });
 
-        // Convert up to 5 pages so we don't blow the token budget
         const pageImages = [];
-        for (let page = 1; page <= 5; page++) {
+        for (let page = 1; page <= 10; page++) {
             try {
                 const result = await converter(page);
                 if (result && result.path && fs.existsSync(result.path)) {
-                    // Preprocess each page for cleaner OCR
                     const enhanced = await preprocessImageForOCR(result.path);
                     const base64 = encodeImage(enhanced);
                     pageImages.push({ base64, mimeType: 'image/jpeg' });
-
-                    // Clean up intermediate files
                     if (enhanced !== result.path) fs.unlinkSync(enhanced);
                     fs.unlinkSync(result.path);
                 } else {
-                    break; // Fewer pages than max
+                    break;
                 }
             } catch {
-                break; // No more pages
+                break;
             }
         }
 
-        // Clean up the temp directory
         try { fs.rmdirSync(outDir); } catch {}
-
         return pageImages;
     } catch (err) {
         try { fs.rmSync(outDir, { recursive: true, force: true }); } catch {}
-        throw new Error(`PDF → image conversion failed: ${err.message}`);
+        throw err;
     }
+}
+
+async function pdfToImagesViaPdfjs(filePath) {
+    const data = new Uint8Array(fs.readFileSync(filePath));
+    const canvasFactory = new NodeCanvasFactory();
+    const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory }).promise;
+    const maxPages = Math.min(pdf.numPages, 10);
+    const pageImages = [];
+
+    for (let p = 1; p <= maxPages; p++) {
+        const page = await pdf.getPage(p);
+        const viewport = page.getViewport({ scale: 2 });
+        const { canvas, context } = canvasFactory.create(
+            Math.ceil(viewport.width), Math.ceil(viewport.height)
+        );
+
+        await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
+
+        const jpegBuf = canvas.toBuffer('image/jpeg');
+        pageImages.push({ base64: jpegBuf.toString('base64'), mimeType: 'image/jpeg' });
+    }
+
+    console.log(`[OCR] pdfjs-dist rendered ${pageImages.length}/${pdf.numPages} pages`);
+    return pageImages;
 }
 
 /**
@@ -421,15 +462,44 @@ app.use(express.json());
 // Serve uploaded files: disk first (fast), then the database copy. The disk is
 // wiped on every redeploy of the free tier, so the DB copy is what keeps old
 // answer papers viewable in reports.
+// Auth-gated: only the teacher who owns the script (or their student) can view it.
 app.get('/uploads/:name', (req, res) => {
     const name = path.basename(req.params.name); // no traversal
-    const diskPath = path.join(__dirname, 'uploads', name);
-    if (fs.existsSync(diskPath)) return res.sendFile(diskPath);
-    db.get('SELECT mime, data FROM stored_files WHERE filename = ?', [name], (err, row) => {
-        if (err || !row) return res.status(404).json({ error: 'File not found' });
-        res.set('Content-Type', row.mime || 'application/octet-stream');
-        res.send(Buffer.from(row.data, 'base64'));
-    });
+
+    const sendFile = () => {
+        const diskPath = path.join(__dirname, 'uploads', name);
+        if (fs.existsSync(diskPath)) return res.sendFile(diskPath);
+        db.get('SELECT mime, data FROM stored_files WHERE filename = ?', [name], (err, row) => {
+            if (err || !row) return res.status(404).json({ error: 'File not found' });
+            res.set('Content-Type', row.mime || 'application/octet-stream');
+            res.send(Buffer.from(row.data, 'base64'));
+        });
+    };
+
+    // Verify the requester owns this file via the scripts table.
+    // Accept token from Authorization header OR query param (for <img>/<iframe> src).
+    const headerToken = req.headers['authorization'];
+    const rawToken = headerToken ? headerToken.split(' ')[1] : req.query.token;
+    if (!rawToken) return res.status(401).json({ error: 'Access denied' });
+    try {
+        const verified = jwt.verify(rawToken, JWT_SECRET);
+        const filePath = `uploads/${name}`;
+        if (verified.role === 'Student') {
+            db.get(`SELECT id FROM scripts WHERE filepath = ? AND student_id = ? AND teacher_id = ?`,
+                [filePath, verified.student_code, verified.teacher_id], (e, row) => {
+                    if (e || !row) return res.status(403).json({ error: 'Access denied' });
+                    sendFile();
+                });
+        } else {
+            db.get(`SELECT id FROM scripts WHERE filepath = ? AND teacher_id = ?`,
+                [filePath, verified.id], (e, row) => {
+                    if (e || !row) return res.status(403).json({ error: 'Access denied' });
+                    sendFile();
+                });
+        }
+    } catch {
+        return res.status(401).json({ error: 'Invalid token' });
+    }
 });
 
 // Persist an uploaded file into the DB (base64). Capped at 8 MB raw to protect
@@ -644,11 +714,23 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
 
         const { student_id, grade, exam, subject, assignment_id } = fields;
 
+        // Compute file hash for duplicate detection.
+        const fileHash = crypto.createHash('sha256').update(fs.readFileSync(file.path)).digest('hex');
+
+        // Check if the exact same file was already graded for this teacher+student+subject+exam.
+        const existing = await new Promise(r => db.get(
+            `SELECT id, total_marks, max_marks, confidence_score, status, flags, report,
+                    corrections, question_analysis, ai_total_marks, ai_confidence, transcription
+             FROM scripts
+             WHERE teacher_id = ? AND file_hash = ? AND student_id = ? AND subject = ? AND exam = ?
+               AND is_deleted = 0 AND status != 'Pending'`,
+            [req.user.id, fileHash, student_id || '', subject || 'Unassigned', exam || 'Unassigned'],
+            (e, row) => r(row)
+        ));
+
         db.run(
-            `INSERT INTO scripts (teacher_id, student_id, filename, filepath, grade, exam, subject, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            // Store the web-servable relative path (served via the /uploads static route),
-            // not the absolute disk path — the frontend uses this value as a URL.
-            [req.user.id, student_id, file.originalname, `uploads/${file.filename}`, grade || 'Unassigned', exam || 'Unassigned', subject || 'Unassigned', assignment_id || null],
+            `INSERT INTO scripts (teacher_id, student_id, filename, filepath, grade, exam, subject, assignment_id, file_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.user.id, student_id, file.originalname, `uploads/${file.filename}`, grade || 'Unassigned', exam || 'Unassigned', subject || 'Unassigned', assignment_id || null, fileHash],
             function (err) {
                 if (err) {
                     console.error('Database Error:', err.message);
@@ -658,6 +740,25 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
 
                 // Keep a DB copy so the paper stays viewable after redeploys.
                 persistFileToDB(file.path, file.filename, getMimeType(file.path));
+
+                // If a previous identical upload was already graded, copy its results
+                // instead of re-grading — guarantees the same file always gets the same marks.
+                if (existing) {
+                    console.log(`[Duplicate] Script ${scriptId} matches previously graded script ${existing.id} (hash ${fileHash.slice(0, 12)}…) — copying grade`);
+                    db.run(
+                        `UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?,
+                         confidence_score = ?, flags = ?, report = ?, corrections = ?,
+                         question_analysis = ?, ai_total_marks = ?, ai_confidence = ?,
+                         transcription = ? WHERE id = ?`,
+                        [existing.status, existing.total_marks, existing.max_marks,
+                         existing.confidence_score, existing.flags,
+                         existing.report ? existing.report + ' [Duplicate — grade copied from previous upload]' : existing.report,
+                         existing.corrections, existing.question_analysis,
+                         existing.ai_total_marks, existing.ai_confidence,
+                         existing.transcription, scriptId]
+                    );
+                    return res.json({ message: 'Duplicate file detected — previous grade applied', scriptId, duplicate: true });
+                }
 
                 // Async AI evaluation
                 (async () => {
@@ -1047,7 +1148,13 @@ Return ONLY raw JSON. No markdown.`;
                         const correctionsStr = JSON.stringify(aiData.corrections || []);
                         const questionAnalysisStr = JSON.stringify(aiData.question_analysis || []);
 
-                        db.get(`SELECT value FROM settings WHERE key = 'confidence_threshold'`, (err, row) => {
+                        db.get(
+                            `SELECT COALESCE(
+                                (SELECT value FROM teacher_settings WHERE teacher_id = ? AND key = 'confidence_threshold'),
+                                (SELECT value FROM settings WHERE key = 'confidence_threshold'),
+                                '75'
+                             ) AS value`,
+                            [req.user.id], (err, row) => {
                             const threshold = row ? parseFloat(row.value) : 75;
                             const status = score < threshold ? 'Needs Review' : 'Evaluated';
                             const flags = score < threshold ? 'Low Confidence' : 'AI Verified';
@@ -1369,22 +1476,30 @@ Keep language simple, age-appropriate, and motivating. Focus on a growth mindset
     }
 });
 
-// Settings
+// Settings — per-teacher: each teacher gets their own confidence threshold.
+// Falls back to the global default when a teacher hasn't customised a key.
 app.get('/api/settings', verifyToken, (req, res) => {
-    db.all(`SELECT * FROM settings`, [], (err, rows) => {
+    db.all(`SELECT key, value FROM teacher_settings WHERE teacher_id = ?`, [req.user.id], (err, teacherRows) => {
         if (err) return res.status(500).json({ error: err.message });
         const settings = {};
-        rows.forEach(r => settings[r.key] = r.value);
-        res.json(settings);
+        teacherRows.forEach(r => settings[r.key] = r.value);
+        // Fill in global defaults for any keys the teacher hasn't overridden.
+        db.all(`SELECT * FROM settings`, [], (err2, globalRows) => {
+            if (!err2) globalRows.forEach(r => { if (!(r.key in settings)) settings[r.key] = r.value; });
+            res.json(settings);
+        });
     });
 });
 
 app.put('/api/settings', verifyToken, (req, res) => {
     const { confidence_threshold } = req.body;
-    db.run(`UPDATE settings SET value = ? WHERE key = 'confidence_threshold'`, [confidence_threshold.toString()], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Settings updated' });
-    });
+    db.run(
+        `INSERT INTO teacher_settings (teacher_id, key, value) VALUES (?, 'confidence_threshold', ?)
+         ON CONFLICT(teacher_id, key) DO UPDATE SET value = excluded.value`,
+        [req.user.id, confidence_threshold.toString()], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: 'Settings updated' });
+        });
 });
 
 // ── Classes management (teacher's classrooms) ───────────────────────────
@@ -1435,6 +1550,10 @@ app.get('/api/classes/:id/students', verifyToken, (req, res) => {
 app.post('/api/classes/:id/students', verifyToken, async (req, res) => {
     const { student_id, name, email, username, password } = req.body;
     if (!student_id?.trim()) return res.status(400).json({ error: 'Student ID required' });
+
+    // Verify this class belongs to the requesting teacher.
+    const cls = await new Promise(r => db.get(`SELECT id FROM classes WHERE id = ? AND teacher_id = ?`, [req.params.id, req.user.id], (e, row) => r(row)));
+    if (!cls) return res.status(404).json({ error: 'Class not found' });
 
     let hashedPw = null;
     const uname = username?.trim() || null;
@@ -1489,10 +1608,13 @@ app.put('/api/students/:id/credentials', verifyToken, async (req, res) => {
 });
 
 app.delete('/api/students/:id', verifyToken, (req, res) => {
-    db.run(`DELETE FROM students WHERE id = ?`, [req.params.id], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Student removed' });
-    });
+    db.run(
+        `DELETE FROM students WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE teacher_id = ?)`,
+        [req.params.id, req.user.id], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) return res.status(404).json({ error: 'Student not found' });
+            res.json({ message: 'Student removed' });
+        });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1618,18 +1740,25 @@ app.get('/api/classes/:id/exams', verifyToken, (req, res) => {
 app.post('/api/classes/:id/exams', verifyToken, (req, res) => {
     const { title, description, exam_date } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'Exam title required' });
-    db.run(`INSERT INTO exams (class_id, title, description, exam_date) VALUES (?, ?, ?, ?)`,
-        [req.params.id, title.trim(), description || '', exam_date || null], function (err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ id: this.lastID, title, description, exam_date });
-        });
+    // Verify class belongs to this teacher before creating an exam in it.
+    db.get(`SELECT id FROM classes WHERE id = ? AND teacher_id = ?`, [req.params.id, req.user.id], (err, cls) => {
+        if (err || !cls) return res.status(404).json({ error: 'Class not found' });
+        db.run(`INSERT INTO exams (class_id, title, description, exam_date) VALUES (?, ?, ?, ?)`,
+            [req.params.id, title.trim(), description || '', exam_date || null], function (err2) {
+                if (err2) return res.status(500).json({ error: err2.message });
+                res.json({ id: this.lastID, title, description, exam_date });
+            });
+    });
 });
 
 app.delete('/api/exams/:id', verifyToken, (req, res) => {
-    db.run(`DELETE FROM exams WHERE id = ?`, [req.params.id], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Exam removed' });
-    });
+    db.run(
+        `DELETE FROM exams WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE teacher_id = ?)`,
+        [req.params.id, req.user.id], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) return res.status(404).json({ error: 'Exam not found' });
+            res.json({ message: 'Exam removed' });
+        });
 });
 
 // ── Subject Curriculum Contexts ─────────────────────────────────────────────
@@ -2516,15 +2645,19 @@ app.listen(PORT, async () => {
 app.get('/api/attendance', verifyToken, (req, res) => {
     const { class_id, date } = req.query;
     if (!class_id || !date) return res.status(400).json({ error: 'class_id and date required' });
-    db.all(
-        `SELECT a.*, s.name AS student_name, s.student_id AS student_code
-         FROM attendance a
-         JOIN students s ON a.student_id = s.id
-         WHERE a.class_id = ? AND a.date = ? AND a.teacher_id = ?
-         ORDER BY s.name`,
-        [class_id, date, req.user.id],
-        (err, rows) => err ? res.status(500).json({ error: err.message }) : res.json(rows)
-    );
+    // Verify class belongs to this teacher before returning data.
+    db.get(`SELECT id FROM classes WHERE id = ? AND teacher_id = ?`, [class_id, req.user.id], (err0, cls) => {
+        if (err0 || !cls) return res.status(404).json({ error: 'Class not found' });
+        db.all(
+            `SELECT a.*, s.name AS student_name, s.student_id AS student_code
+             FROM attendance a
+             JOIN students s ON a.student_id = s.id
+             WHERE a.class_id = ? AND a.date = ? AND a.teacher_id = ?
+             ORDER BY s.name`,
+            [class_id, date, req.user.id],
+            (err, rows) => err ? res.status(500).json({ error: err.message }) : res.json(rows)
+        );
+    });
 });
 
 // Save/update a full day's attendance (batch upsert)
@@ -2533,41 +2666,50 @@ app.post('/api/attendance', verifyToken, (req, res) => {
     if (!class_id || !date || !Array.isArray(records))
         return res.status(400).json({ error: 'class_id, date, records[] required' });
 
-    const stmt = db.prepare(
-        `INSERT INTO attendance (teacher_id, class_id, student_id, date, status, note)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(class_id, student_id, date) DO UPDATE SET status=excluded.status, note=excluded.note`
-    );
-    let saved = 0;
-    for (const r of records) {
-        stmt.run(req.user.id, class_id, r.student_id, date, r.status || 'present', r.note || '', (err) => {
-            if (!err) saved++;
-        });
-    }
-    stmt.finalize(() => res.json({ saved }));
+    // Verify class belongs to this teacher.
+    db.get(`SELECT id FROM classes WHERE id = ? AND teacher_id = ?`, [class_id, req.user.id], (err, cls) => {
+        if (err || !cls) return res.status(404).json({ error: 'Class not found' });
+
+        const stmt = db.prepare(
+            `INSERT INTO attendance (teacher_id, class_id, student_id, date, status, note)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(class_id, student_id, date) DO UPDATE SET status=excluded.status, note=excluded.note`
+        );
+        let saved = 0;
+        for (const r of records) {
+            stmt.run(req.user.id, class_id, r.student_id, date, r.status || 'present', r.note || '', (err2) => {
+                if (!err2) saved++;
+            });
+        }
+        stmt.finalize(() => res.json({ saved }));
+    });
 });
 
 // Attendance report: summary per student over a date range
 app.get('/api/attendance/report', verifyToken, (req, res) => {
     const { class_id, from, to } = req.query;
     if (!class_id) return res.status(400).json({ error: 'class_id required' });
-    const fromDate = from || '2000-01-01';
-    const toDate   = to   || '2099-12-31';
-    db.all(
-        `SELECT s.id AS student_id, s.name, s.student_id AS student_code,
-                COUNT(*) AS total_days,
-                SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END) AS present,
-                SUM(CASE WHEN a.status='absent'  THEN 1 ELSE 0 END) AS absent,
-                SUM(CASE WHEN a.status='late'    THEN 1 ELSE 0 END) AS late,
-                SUM(CASE WHEN a.status='excused' THEN 1 ELSE 0 END) AS excused
-         FROM students s
-         LEFT JOIN attendance a ON a.student_id = s.id
-             AND a.class_id = ? AND a.date BETWEEN ? AND ? AND a.teacher_id = ?
-         WHERE s.class_id = ?
-         GROUP BY s.id ORDER BY s.name`,
-        [class_id, fromDate, toDate, req.user.id, class_id],
-        (err, rows) => err ? res.status(500).json({ error: err.message }) : res.json(rows)
-    );
+    // Verify class belongs to this teacher so student names don't leak.
+    db.get(`SELECT id FROM classes WHERE id = ? AND teacher_id = ?`, [class_id, req.user.id], (err0, cls) => {
+        if (err0 || !cls) return res.status(404).json({ error: 'Class not found' });
+        const fromDate = from || '2000-01-01';
+        const toDate   = to   || '2099-12-31';
+        db.all(
+            `SELECT s.id AS student_id, s.name, s.student_id AS student_code,
+                    COUNT(*) AS total_days,
+                    SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END) AS present,
+                    SUM(CASE WHEN a.status='absent'  THEN 1 ELSE 0 END) AS absent,
+                    SUM(CASE WHEN a.status='late'    THEN 1 ELSE 0 END) AS late,
+                    SUM(CASE WHEN a.status='excused' THEN 1 ELSE 0 END) AS excused
+             FROM students s
+             LEFT JOIN attendance a ON a.student_id = s.id
+                 AND a.class_id = ? AND a.date BETWEEN ? AND ? AND a.teacher_id = ?
+             WHERE s.class_id = ?
+             GROUP BY s.id ORDER BY s.name`,
+            [class_id, fromDate, toDate, req.user.id, class_id],
+            (err, rows) => err ? res.status(500).json({ error: err.message }) : res.json(rows)
+        );
+    });
 });
 
 // Monthly calendar view: which dates had attendance recorded for a class

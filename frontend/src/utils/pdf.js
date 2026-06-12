@@ -63,12 +63,23 @@ export async function rasterizePdfToImage(file, { scale = 2 } = {}) {
 }
 
 /**
- * If the file is a PDF, convert it to an image; otherwise return it unchanged.
- * Falls back to the original file if rasterization fails, so upload never breaks.
+ * If the file is a single-page PDF, convert it to an image for accurate (x, y)
+ * coordinate overlay; otherwise return it unchanged.
+ *
+ * Multi-page PDFs (e.g. CamScanner scans with several pages) are left as PDF
+ * so the backend can convert each page to a separate high-res image and send
+ * them individually to the AI. Stacking many pages into one tall PNG made the
+ * image too large and caused the AI to misread handwritten content.
  */
 export async function toImageIfPdf(file) {
     if (!isPdf(file)) return file;
     try {
+        const data = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data }).promise;
+        if (pdf.numPages > 1) {
+            // Multi-page: let the backend handle per-page conversion
+            return file;
+        }
         return await rasterizePdfToImage(file);
     } catch (err) {
         console.error('PDF rasterization failed, uploading original PDF:', err);

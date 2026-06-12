@@ -106,14 +106,24 @@ function initSchema() {
             // Two-stage grading: the verbatim transcription of what the AI read
             // from the handwriting (Stage 1). Lets teachers verify the OCR.
             db.run(`ALTER TABLE scripts ADD COLUMN transcription TEXT`, () => {});
+            // File hash for duplicate detection — re-uploading the same file
+            // reuses the previous grade instead of producing a different score.
+            db.run(`ALTER TABLE scripts ADD COLUMN file_hash TEXT`, () => {});
 
-            // Settings table
+            // Settings table — per-teacher so each teacher has their own thresholds.
             db.run(`CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )`, () => {
                 db.run(`INSERT OR IGNORE INTO settings (key, value) VALUES ('confidence_threshold', '75')`);
             });
+            db.run(`CREATE TABLE IF NOT EXISTS teacher_settings (
+                teacher_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                PRIMARY KEY (teacher_id, key),
+                FOREIGN KEY (teacher_id) REFERENCES users(id)
+            )`);
 
             // Classes: a teacher's classroom roster (e.g., "Grade 10 Math A").
             db.run(`CREATE TABLE IF NOT EXISTS classes (

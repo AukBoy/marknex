@@ -143,7 +143,10 @@ function Dashboard() {
                 formData.append('textbook_strict', textbookStrict ? 'true' : 'false');
                 formData.append('script', f);
 
-                await api.post('/scripts/upload', formData);
+                const resp = await api.post('/scripts/upload', formData);
+                if (resp.data?.duplicate) {
+                    showToast.info(`File "${original.name}" was previously graded — same marks applied`);
+                }
             }
             setFiles(null);
             setStudentId('');

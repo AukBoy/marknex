@@ -37,7 +37,11 @@ api.interceptors.response.use(
 // Builds a servable URL for an uploaded file. Uses only the basename so it works
 // for both new records (uploads/<file>) and legacy absolute disk paths — every
 // uploaded file is served from the backend's /uploads static route.
-export const fileUrl = (filepath) =>
-    `${API_BASE}/uploads/${(filepath || '').split(/[\\/]/).pop()}`;
+// Appends the JWT as a query param so <img>/<iframe> tags pass auth.
+export const fileUrl = (filepath) => {
+    const base = `${API_BASE}/uploads/${(filepath || '').split(/[\\/]/).pop()}`;
+    const token = localStorage.getItem('token');
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+};
 
 export default api;
