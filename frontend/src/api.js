@@ -19,6 +19,21 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
+// A 401 while holding a token means the session is stale (e.g. the account no
+// longer matches the token) — clear it and return to the login screen instead
+// of showing broken pages.
+api.interceptors.response.use(
+    (res) => res,
+    (err) => {
+        if (err.response?.status === 401 && localStorage.getItem('token')) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('role');
+            window.location.href = '/';
+        }
+        return Promise.reject(err);
+    }
+);
+
 // Builds a servable URL for an uploaded file. Uses only the basename so it works
 // for both new records (uploads/<file>) and legacy absolute disk paths — every
 // uploaded file is served from the backend's /uploads static route.

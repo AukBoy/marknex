@@ -512,8 +512,19 @@ const verifyToken = (req, res, next) => {
     if (!token) return res.status(401).json({ error: 'Access Denied' });
     try {
         const verified = jwt.verify(token.split(' ')[1], JWT_SECRET);
-        req.user = verified;
-        next();
+        // Bind the token to the LIVE account. Without this, a token minted
+        // before a database reset stays valid and silently maps onto whichever
+        // account now holds that id — two different teachers ended up sharing
+        // an identity that way. Tokens must carry the username, and it must
+        // still match the account at that id.
+        const expired = () => res.status(401).json({ error: 'Session expired. Please sign in again.' });
+        if (!verified.username) return expired(); // pre-fix token — force re-login
+        const table = verified.role === 'Student' ? 'students' : 'users';
+        db.get(`SELECT username FROM ${table} WHERE id = ?`, [verified.id], (e, row) => {
+            if (e || !row || row.username !== verified.username) return expired();
+            req.user = verified;
+            next();
+        });
     } catch (err) {
         res.status(400).json({ error: 'Invalid Token' });
     }
@@ -596,7 +607,7 @@ app.post('/api/auth/login', authRateLimit, (req, res) => {
                 const ok = await bcrypt.compare(password, student.password);
                 if (!ok) return res.status(400).json({ error: 'Invalid username or password' });
                 const token = jwt.sign({
-                    id: student.id, role: 'Student',
+                    id: student.id, role: 'Student', username: student.username,
                     student_code: student.student_id, teacher_id: student.teacher_id,
                 }, JWT_SECRET, { expiresIn: '24h' });
                 res.json({ message: 'Login successful', token, role: 'Student', username: student.username, name: student.name });
@@ -609,7 +620,7 @@ app.post('/api/auth/login', authRateLimit, (req, res) => {
             if (user) {
                 const valid = await bcrypt.compare(password, user.password);
                 if (!valid) return res.status(400).json({ error: 'Invalid username or password' });
-                const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+                const token = jwt.sign({ id: user.id, role: user.role, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
                 return res.json({ message: 'Login successful', token, role: user.role, username: user.username });
             }
             if (fallbackToStudent) return tryStudent();
