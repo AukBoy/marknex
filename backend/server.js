@@ -286,16 +286,19 @@ const GRADING_RUNS = Math.min(5, Math.max(1, parseInt(process.env.GRADING_RUNS |
 // Grading then anchors to this text so repeated reads don't drift the score, and
 // the teacher can see exactly what the AI read.
 async function transcribePaper(filePath, gradeModel) {
-    const prompt = `You are a precise transcription assistant. Read this student's answer paper (handwritten or printed) and transcribe EXACTLY what the student wrote — word for word.
+    const prompt = `You are a precise transcription assistant. Read this student's answer paper and transcribe EVERYTHING on the page — both printed questions AND handwritten answers.
 
 RULES:
-- Transcribe every question's answer. Keep question numbers (Q1, Q2, …) if present.
-- Preserve mathematical notation, working steps, units and line breaks.
-- Do NOT grade, correct, judge or add anything — transcribe only what is actually written.
+- For each question, transcribe the PRINTED QUESTION TEXT first, then the student's handwritten answer/working.
+- Format: "Q1: [printed question] → Student answer: [handwritten response]"
+- Keep question numbers (Q1, Q2, 01, 02, …) as they appear.
+- Preserve mathematical notation, working steps, intermediate calculations, units and line breaks.
+- Transcribe the FINAL ANSWER box content separately if present (e.g., "Final answer: 8754").
+- Do NOT grade, correct, judge or add anything — transcribe only what is actually written/printed.
 - For anything you genuinely cannot read, write [illegible].
 
 Return ONLY raw JSON:
-{ "transcription": "Q1: <verbatim>\\nQ2: <verbatim>\\n…", "ocr_confidence": 0-100 }`;
+{ "transcription": "Q1: [question] → Student answer: [response] (Final answer: ...)\\nQ2: ...\\n…", "ocr_confidence": 0-100 }`;
 
     const content = await buildOCRContentArray(filePath, prompt);
     const resp = await openai.chat.completions.create({
@@ -911,14 +914,25 @@ Return ONLY raw JSON. No markdown, no extra text.`;
                         } else {
                             const gradeScope = textbookStrictMode
                                 ? `STRICT TEXTBOOK GRADING: You must grade ONLY based on the reference textbook provided above ("${textbookLabel}"). Do not award marks for knowledge not covered in that textbook. In feedback, refer to the textbook topics by name.`
-                                : (assignmentRubrics || (curriculumBlock ? 'Grade based on the curriculum context above.' : 'Use general academic standards.'));
+                                : (assignmentRubrics || (curriculumBlock ? 'Grade based on the curriculum context above.' : 'Grade each question by reading the printed question, computing or determining the correct answer yourself, then comparing it with the student\'s written answer. Award full marks for correct answers with valid working, partial credit for partially correct work.'));
 
                             // Subject-specialised grading. Mathematics needs method
                             // marks, equivalent-answer recognition and step checking.
-                            const isMaths = /\b(math|maths|mathematics|further math|pure math|applied math|calculus|algebra|geometry|trigonometry|arithmetic)\b/i.test(subject || '');
-                            const mathsGuidance = isMaths ? `
+                            // Initial check: subject field. A second check against the
+                            // transcription content is done after Stage 1 (see below).
+                            let isMaths = /\b(math|maths|mathematics|further math|pure math|applied math|calculus|algebra|geometry|trigonometry|arithmetic)\b/i.test(subject || '');
+                            const MATHS_GUIDANCE_TEXT = `
 
 MATHEMATICS GRADING MODE (this is a Maths paper — grade like a maths examiner):
+
+  ⚠️  CRITICAL — ARITHMETIC VERIFICATION (you MUST do this for every question):
+  1. Read the PRINTED QUESTION (e.g., "4768 + 3986").
+  2. COMPUTE the correct answer yourself (e.g., 4768 + 3986 = 8754).
+  3. Read the student's FINAL ANSWER (handwritten).
+  4. Compare YOUR computed answer with the student's answer.
+  5. If they match → Correct (full marks). If they don't → check working for partial credit.
+  Do NOT rely on "feeling" whether an answer looks right — ALWAYS compute it yourself.
+
   • OCR carefully reads MATHEMATICAL NOTATION: fractions, exponents/superscripts (x², 10³), subscripts, square roots (√), ±, ×, ÷, ≤ ≥ ≠, π, °, integrals/sigma, indices, and multi-line working. Preserve the layout of each step.
   • Award METHOD marks: give partial credit for correct working/steps even if the final answer is wrong.
   • Accept mathematically EQUIVALENT answers as correct: e.g. 1/2 = 0.5 = 50%, 2(x+1) = 2x+2, √2 ≈ 1.41, x=2 vs x = 2.0, fractions vs decimals, different but valid algebraic forms.
@@ -926,11 +940,13 @@ MATHEMATICS GRADING MODE (this is a Maths paper — grade like a maths examiner)
   • Distinguish a small ARITHMETIC slip (lose 1 mark) from a CONCEPTUAL error (lose more) — say which in the tip.
   • Reward correct formula selection and correct substitution even before the final computation.
   • Require units where relevant; note missing units but don't treat as a full error.
-  • In teacher_tip, point to the exact step that went wrong and show the correct step.` : '';
+  • In teacher_tip, point to the exact step that went wrong and show the correct step.`;
+                            const mathsGuidance = isMaths ? MATHS_GUIDANCE_TEXT : '';
 
                             prompt = `You are MarkNex, an expert AI teacher grading assistant. Your task has TWO steps:
 
 STEP 1 — OCR (CRITICAL): Before grading, carefully read ALL text in the document.
+  • Read BOTH the printed question text AND the student's handwritten answer for each question
   • Handwritten AND printed text both count
   • Read crossed-out words — they still contain information
   • Multi-page: read every page completely before starting
@@ -940,10 +956,12 @@ STEP 2 — GRADE: ${gradeScope}
 ${assignmentRubrics ? '\n' + assignmentRubrics : ''}${mathsGuidance}
 
 Grading rules:
+  • IMPORTANT: For any question involving a calculation, COMPUTE the correct answer yourself first, then compare with the student's answer. Do not guess — verify by calculating.
   • Be fair — partial credit where appropriate
   • Imagine a 100x100 grid over the page (0,0 = top-left, 100,100 = bottom-right)
   • For each error, give its approximate (x, y) coordinates so it can be highlighted
   • If you cannot read part of the script, lower confidence_score accordingly
+  • If the student's final answer is correct, award full marks for that question even if the working is incomplete
 ${textbookStrictMode ? `  • IMPORTANT: Only award marks for content that appears in the reference textbook "${textbookLabel}"` : ''}
 
 Return a JSON object with EXACTLY these keys:
@@ -1048,6 +1066,18 @@ Return ONLY raw JSON. No markdown.`;
                                 ({ transcription, ocrConfidence } = await transcribePaper(file.path, gradeModel));
                                 console.log(`[TwoStage] Transcribed ${transcription.length} chars (OCR conf ${ocrConfidence}%) for script ${scriptId}`);
                             } catch (tErr) { console.warn('[TwoStage] Transcription failed:', tErr.message); }
+
+                            // Auto-detect math from the transcription when subject
+                            // wasn't set — arithmetic operators in the content mean
+                            // this is a math paper and needs the verification prompt.
+                            if (!isMaths && transcription) {
+                                const hasMathOps = /[\+\-×÷]\s*\d|\d\s*[\+\-×÷]|\d+\s*[xX×]\s*\d|\b\d+\s*\+\s*\d+\b|\b\d+\s*-\s*\d+\b|\b\d+\s*÷\s*\d+\b/.test(transcription);
+                                if (hasMathOps) {
+                                    isMaths = true;
+                                    console.log(`[TwoStage] Auto-detected math content from transcription for script ${scriptId}`);
+                                    contentArray[0].text += MATHS_GUIDANCE_TEXT;
+                                }
+                            }
 
                             // Stage 2: anchor grading to that transcription so the
                             // score doesn't drift between reads. Images stay attached
