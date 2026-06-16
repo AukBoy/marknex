@@ -59,6 +59,9 @@ function initSchema() {
                 FOREIGN KEY (teacher_id) REFERENCES users(id)
             )`);
 
+            // Teacher's answer transcription — used as gold standard for grading
+            db.run(`ALTER TABLE assignments ADD COLUMN teacher_answers TEXT`, () => {});
+
             // Questions table
             db.run(`CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +112,9 @@ function initSchema() {
             // File hash for duplicate detection — re-uploading the same file
             // reuses the previous grade instead of producing a different score.
             db.run(`ALTER TABLE scripts ADD COLUMN file_hash TEXT`, () => {});
+            // All page file paths for multi-page uploads (JSON array).
+            // Re-grade needs all pages, not just the first one.
+            db.run(`ALTER TABLE scripts ADD COLUMN all_pages TEXT`, () => {});
 
             // Settings table — per-teacher so each teacher has their own thresholds.
             db.run(`CREATE TABLE IF NOT EXISTS settings (

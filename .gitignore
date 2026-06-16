@@ -8,11 +8,18 @@ node_modules/
 # Logs
 *.log
 
-# SQLite database (incl. WAL/SHM sidecars) & uploaded files (runtime data)
+# SQLite database (incl. WAL/SHM sidecars) & uploaded files (runtime data).
+# Broad *.sqlite* guard so no DB with student PII / password hashes is committed.
 backend/marknex.db
 backend/marknex.db-wal
 backend/marknex.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 backend/uploads/
+
+# Generated report (binary doc, not source)
+MarkNex_System_Report.doc
 
 # Scratch / debug output
 backend/out.json

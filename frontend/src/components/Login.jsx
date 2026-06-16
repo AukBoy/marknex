@@ -54,7 +54,8 @@ function Login({ onLogin }) {
             const res = await api.post('/auth/login', { username, password, portal });
             onLogin(res.data.token, false, res.data.role);
         } catch (err) {
-            setError(err.response?.data?.error || (forgotMode ? 'Reset failed' : 'Login failed'));
+            const fallback = forgotMode ? 'Reset failed' : (!isLogin ? 'Signup failed' : 'Login failed');
+            setError(err.response?.data?.error || err.message || fallback);
         } finally {
             setLoading(false);
         }

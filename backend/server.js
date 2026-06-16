@@ -12,16 +12,7 @@ const crypto = require('crypto');
 const pdfParse = require('pdf-parse');
 const sharp = require('sharp');
 const { fromPath } = require('pdf2pic');
-const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.mjs');
-const { createCanvas } = require('@napi-rs/canvas');
 const { OpenAI } = require('openai');
-
-// Canvas factory for pdfjs-dist server-side rendering (pure JS, no GraphicsMagick)
-class NodeCanvasFactory {
-    create(w, h)  { const canvas = createCanvas(w, h); return { canvas, context: canvas.getContext('2d') }; }
-    reset(c, w, h){ c.canvas.width = w; c.canvas.height = h; }
-    destroy()     {}
-}
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -64,18 +55,32 @@ function encodeImage(filePath) {
  */
 async function preprocessImageForOCR(filePath) {
     const ext = path.extname(filePath).toLowerCase();
-    // Only process raster images — leave PDFs alone (handled separately)
     if (ext === '.pdf') return filePath;
 
     const outPath = filePath.replace(/(\.[^.]+)$/, '_ocr_enhanced.jpg');
     try {
-        await sharp(filePath)
-            .grayscale()                          // Remove colour distractions
-            .normalize()                          // Stretch contrast to full range
-            .sharpen({ sigma: 1.5, m1: 0.5, m2: 3.0 }) // Sharpen text edges
-            .linear(1.2, -20)                     // Slight contrast boost
-            .jpeg({ quality: 95 })                // High-quality output
-            .toFile(outPath);
+        const meta = await sharp(filePath).metadata();
+        const width = meta.width || 0;
+
+        let pipeline = sharp(filePath);
+
+        // Upscale small images so digits are large enough for reliable reading.
+        if (width > 0 && width < 2200) {
+            pipeline = pipeline.resize({
+                width: 2200,
+                kernel: sharp.kernel.lanczos3,
+                withoutEnlargement: false,
+            });
+        }
+
+        pipeline = pipeline
+            .grayscale()
+            .normalize()
+            .sharpen({ sigma: 1.5, m1: 1.5, m2: 3.0 })
+            .linear(1.4, -30)
+            .jpeg({ quality: 98 });
+
+        await pipeline.toFile(outPath);
         return outPath;
     } catch (err) {
         console.warn(`[OCR] Image preprocessing failed for ${filePath}: ${err.message}. Using original.`);
@@ -84,26 +89,50 @@ async function preprocessImageForOCR(filePath) {
 }
 
 /**
- * Convert every page of a PDF to a high-resolution JPEG so GPT-4o can visually
- * OCR handwritten or printed content (pdf-parse only reads embedded text).
+ * Split a tall combined image (e.g. CamScanner stitched pages) into
+ * individual page-sized tiles so GPT-4o can read each page at full
+ * resolution. Without this, the model hallucinates question content
+ * from the tiny text in a single tall image.
  *
- * Returns an array of { base64, mimeType } objects — one per page (max 5 pages
- * to stay inside GPT-4o's token budget).
+ * Returns null if the image doesn't need splitting.
  */
-async function pdfToImages(filePath) {
-    // Strategy 1: pdf2pic (requires GraphicsMagick — fast, high quality)
+async function splitTallImage(filePath) {
     try {
-        const images = await pdfToImagesViaPdf2pic(filePath);
-        if (images.length > 0) return images;
-    } catch (err) {
-        console.warn(`[OCR] pdf2pic unavailable (${err.message}), trying pdfjs-dist fallback`);
-    }
+        const meta = await sharp(filePath).metadata();
+        const w = meta.width || 0;
+        const h = meta.height || 0;
+        if (!w || !h || h <= w * 1.8) return null;
 
-    // Strategy 2: pdfjs-dist + @napi-rs/canvas (pure JS, no native deps)
-    return pdfToImagesViaPdfjs(filePath);
+        // Target tile height: roughly one printed page (A4 ≈ 1.41 × width).
+        // Cap at 1600px so even non-standard pages get split fine.
+        const tileH = Math.min(Math.round(w * 1.41), 1600);
+        const numTiles = Math.ceil(h / tileH);
+        if (numTiles <= 1) return null;
+
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath, path.extname(filePath));
+        const tiles = [];
+
+        for (let i = 0; i < numTiles; i++) {
+            const top = i * tileH;
+            const thisH = Math.min(tileH, h - top);
+            if (thisH < 80) break;
+            const tilePath = path.join(dir, `${base}_tile${i}.jpg`);
+            await sharp(filePath)
+                .extract({ left: 0, top, width: w, height: thisH })
+                .jpeg({ quality: 95 })
+                .toFile(tilePath);
+            tiles.push(tilePath);
+        }
+        console.log(`[OCR] Split tall image (${w}×${h}) into ${tiles.length} tiles of ~${tileH}px each`);
+        return tiles;
+    } catch (err) {
+        console.warn('[OCR] Tall-image split failed:', err.message);
+        return null;
+    }
 }
 
-async function pdfToImagesViaPdf2pic(filePath) {
+async function pdfToImages(filePath) {
     const outDir = path.join(path.dirname(filePath), `pdf_pages_${Date.now()}`);
     fs.mkdirSync(outDir, { recursive: true });
 
@@ -117,6 +146,7 @@ async function pdfToImagesViaPdf2pic(filePath) {
             height: 2048,
         });
 
+        // Convert up to 10 pages (a 10-question math paper can span 5+ pages)
         const pageImages = [];
         for (let page = 1; page <= 10; page++) {
             try {
@@ -125,8 +155,8 @@ async function pdfToImagesViaPdf2pic(filePath) {
                     const enhanced = await preprocessImageForOCR(result.path);
                     const base64 = encodeImage(enhanced);
                     pageImages.push({ base64, mimeType: 'image/jpeg' });
-                    if (enhanced !== result.path) fs.unlinkSync(enhanced);
-                    fs.unlinkSync(result.path);
+                    if (enhanced !== result.path) try { fs.unlinkSync(enhanced); } catch {}
+                    try { fs.unlinkSync(result.path); } catch {}
                 } else {
                     break;
                 }
@@ -139,32 +169,8 @@ async function pdfToImagesViaPdf2pic(filePath) {
         return pageImages;
     } catch (err) {
         try { fs.rmSync(outDir, { recursive: true, force: true }); } catch {}
-        throw err;
+        throw new Error(`PDF → image conversion failed: ${err.message}`);
     }
-}
-
-async function pdfToImagesViaPdfjs(filePath) {
-    const data = new Uint8Array(fs.readFileSync(filePath));
-    const canvasFactory = new NodeCanvasFactory();
-    const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory }).promise;
-    const maxPages = Math.min(pdf.numPages, 10);
-    const pageImages = [];
-
-    for (let p = 1; p <= maxPages; p++) {
-        const page = await pdf.getPage(p);
-        const viewport = page.getViewport({ scale: 2 });
-        const { canvas, context } = canvasFactory.create(
-            Math.ceil(viewport.width), Math.ceil(viewport.height)
-        );
-
-        await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
-
-        const jpegBuf = canvas.toBuffer('image/jpeg');
-        pageImages.push({ base64: jpegBuf.toString('base64'), mimeType: 'image/jpeg' });
-    }
-
-    console.log(`[OCR] pdfjs-dist rendered ${pageImages.length}/${pdf.numPages} pages`);
-    return pageImages;
 }
 
 /**
@@ -178,86 +184,101 @@ async function pdfToImagesViaPdfjs(filePath) {
  * For images:
  *   • Preprocess with sharp, then embed as a base64 image_url block.
  */
-async function buildOCRContentArray(filePath, promptText) {
-    const ext = path.extname(filePath).toLowerCase();
+async function buildOCRContentArray(filePathOrPaths, promptText) {
+    // Accept a single path or array of paths (multi-page uploads)
+    const filePaths = Array.isArray(filePathOrPaths) ? filePathOrPaths : [filePathOrPaths];
     const contentArray = [{ type: 'text', text: promptText }];
 
-    if (ext === '.pdf') {
-        let usedVisualOCR = false;
-
-        // Try visual OCR first (handles handwriting and scanned pages)
-        try {
-            const pages = await pdfToImages(filePath);
-            if (pages.length > 0) {
-                usedVisualOCR = true;
-                if (pages.length > 1) {
-                    contentArray.push({
-                        type: 'text',
-                        text: `This PDF has ${pages.length} page(s). Read ALL pages carefully before grading.`
-                    });
-                }
-                for (const { base64, mimeType } of pages) {
-                    contentArray.push({
-                        type: 'image_url',
-                        image_url: {
-                            url: `data:${mimeType};base64,${base64}`,
-                            detail: 'high'   // Full-resolution tile decoding for legibility
-                        }
-                    });
-                }
-                console.log(`[OCR] PDF visual OCR: ${pages.length} page(s) converted`);
-            }
-        } catch (err) {
-            console.warn(`[OCR] Visual PDF OCR unavailable (${err.message}), falling back to text extraction`);
-        }
-
-        // Fallback: embed extracted text (typed PDFs only)
-        if (!usedVisualOCR) {
-            try {
-                const dataBuffer = fs.readFileSync(filePath);
-                const data = await pdfParse(dataBuffer);
-                if (data.text && data.text.trim().length > 0) {
-                    contentArray.push({
-                        type: 'text',
-                        text: `Extracted text from PDF:\n\n${data.text}`
-                    });
-                    console.log('[OCR] PDF text extraction fallback used');
-                } else {
-                    contentArray.push({
-                        type: 'text',
-                        text: 'WARNING: PDF has no extractable text (may be a scanned image). Grade based on any visible content.'
-                    });
-                }
-            } catch (pdfErr) {
-                console.error('[OCR] PDF text extraction also failed:', pdfErr.message);
-            }
-        }
-    } else {
-        // Raster image — preprocess then embed
-        let processedPath = filePath;
-        try {
-            processedPath = await preprocessImageForOCR(filePath);
-        } catch (err) {
-            console.warn('[OCR] Preprocessing skipped:', err.message);
-        }
-
-        const mimeType = getMimeType(filePath); // Use original ext for correct MIME
-        const base64Image = encodeImage(processedPath);
-
+    if (filePaths.length > 1) {
         contentArray.push({
-            type: 'image_url',
-            image_url: {
-                url: `data:${mimeType};base64,${base64Image}`,
-                detail: 'high'
-            }
+            type: 'text',
+            text: `This document has ${filePaths.length} page(s). Read ALL pages carefully before grading.`
         });
+    }
 
-        // Clean up enhanced file if it's different from original
-        if (processedPath !== filePath) {
-            try { fs.unlinkSync(processedPath); } catch {}
+    for (const filePath of filePaths) {
+        const ext = path.extname(filePath).toLowerCase();
+
+        if (ext === '.pdf') {
+            let usedVisualOCR = false;
+
+            try {
+                const pages = await pdfToImages(filePath);
+                if (pages.length > 0) {
+                    usedVisualOCR = true;
+                    for (const { base64, mimeType } of pages) {
+                        contentArray.push({
+                            type: 'image_url',
+                            image_url: {
+                                url: `data:${mimeType};base64,${base64}`,
+                                detail: 'high'
+                            }
+                        });
+                    }
+                    console.log(`[OCR] PDF visual OCR: ${pages.length} page(s) converted`);
+                }
+            } catch (err) {
+                console.warn(`[OCR] Visual PDF OCR unavailable (${err.message}), falling back to text extraction`);
+            }
+
+            if (!usedVisualOCR) {
+                try {
+                    const dataBuffer = fs.readFileSync(filePath);
+                    const data = await pdfParse(dataBuffer);
+                    if (data.text && data.text.trim().length > 0) {
+                        contentArray.push({ type: 'text', text: `Extracted text from PDF:\n\n${data.text}` });
+                        console.log('[OCR] PDF text extraction fallback used');
+                    } else {
+                        contentArray.push({ type: 'text', text: 'WARNING: PDF has no extractable text (scanned image).' });
+                    }
+                } catch (pdfErr) {
+                    console.error('[OCR] PDF text extraction also failed:', pdfErr.message);
+                }
+            }
+        } else {
+            // Tall combined images (CamScanner stitched pages) get split into
+            // per-page tiles so GPT-4o reads each page at full resolution.
+            const tiles = await splitTallImage(filePath);
+
+            if (tiles && tiles.length > 1) {
+                contentArray.push({
+                    type: 'text',
+                    text: `This image was split into ${tiles.length} page tiles. Each tile is one page of the answer paper — read EVERY tile from first to last. The printed question number and text are at the TOP of each tile.`
+                });
+            }
+
+            const imagePaths = tiles || [filePath];
+            for (const imgPath of imagePaths) {
+                let processedPath = imgPath;
+                try {
+                    processedPath = await preprocessImageForOCR(imgPath);
+                } catch (err) {
+                    console.warn('[OCR] Preprocessing skipped:', err.message);
+                }
+
+                const mimeType = processedPath !== imgPath ? 'image/jpeg' : getMimeType(imgPath);
+                const base64Image = encodeImage(processedPath);
+
+                contentArray.push({
+                    type: 'image_url',
+                    image_url: {
+                        url: `data:${mimeType};base64,${base64Image}`,
+                        detail: 'high'
+                    }
+                });
+
+                if (processedPath !== imgPath) {
+                    try { fs.unlinkSync(processedPath); } catch {}
+                }
+            }
+
+            // Clean up tile temp files
+            if (tiles) {
+                for (const t of tiles) { try { fs.unlinkSync(t); } catch {} }
+            }
+
+            console.log(`[OCR] Image encoded: ${imagePaths.length} segment(s) (${tiles ? 'split from tall image' : 'single'})`);
         }
-
-        console.log(`[OCR] Image preprocessed and encoded (${mimeType})`);
     }
 
     return contentArray;
@@ -280,41 +301,447 @@ async function buildOCRContentArray(filePath, promptText) {
 //   corrections        → taken from the highest-confidence run
 //   report             → best run's text + ensemble summary appended
 //
-const GRADING_RUNS = Math.min(5, Math.max(1, parseInt(process.env.GRADING_RUNS || '3', 10)));
+const GRADING_RUNS = Math.min(7, Math.max(1, parseInt(process.env.GRADING_RUNS || '5', 10)));
+
+// Grading queue — process scripts one at a time to avoid V8 memory crashes
+// from concurrent multi-page PDF rendering.
+const gradingQueue = [];
+let gradingInProgress = false;
+function enqueueGrading(fn) {
+    gradingQueue.push(fn);
+    processGradingQueue();
+}
+async function processGradingQueue() {
+    if (gradingInProgress || gradingQueue.length === 0) return;
+    gradingInProgress = true;
+    const job = gradingQueue.shift();
+    try { await job(); } catch (err) { console.error('[Queue] Grading job failed:', err.message); }
+    gradingInProgress = false;
+    if (gradingQueue.length > 0) setImmediate(processGradingQueue);
+}
+
+// Shared math grading guidance — used by both the upload handler and re-grade endpoint.
+const MATHS_GUIDANCE_TEXT_GLOBAL = `
+
+MATHEMATICS GRADING MODE (this is a Maths paper — grade like a maths examiner):
+
+  ⚠️  CRITICAL — ARITHMETIC VERIFICATION (you MUST do this for every question):
+  1. Read the PRINTED QUESTION directly from the IMAGE, digit by digit. Do NOT rely solely on the transcription.
+  2. CROSS-CHECK: If the student copied the numbers into their working, compare with the printed question.
+  3. COMPUTE the correct answer yourself using the verified question numbers.
+  4. Read the student's FINAL ANSWER (handwritten).
+  5. Compare YOUR computed answer with the student's answer.
+  6. If they match → Correct (full marks). If they don't → check working for partial credit.
+  Do NOT rely on "feeling" — ALWAYS compute it yourself.
+  ⚠️  DIGIT CONFUSION WARNING: Common OCR misreads: 8↔3, 9↔4, 6↔0, 1↔7, 5↔6. If your computed answer differs from the student's by a small amount, RE-READ the question digits before marking wrong.
+
+  • OCR carefully reads MATHEMATICAL NOTATION: fractions, exponents, subscripts, square roots, ±, ×, ÷, etc.
+  • Award METHOD marks: partial credit for correct working even if the final answer is wrong.
+  • Accept mathematically EQUIVALENT answers as correct (1/2 = 0.5 = 50%, etc.).
+  • Check each STEP — follow-through: if a student makes one slip but subsequent steps are correct given that slip, only penalise once.
+  • Distinguish ARITHMETIC slip (lose 1 mark) from CONCEPTUAL error (lose more).
+  • Reward correct formula selection and substitution.
+  • In teacher_tip, point to the exact step that went wrong.`;
+
+// ─── MATH VERIFICATION ENGINE ────────────────────────────────────────────────
+// Production-grade arithmetic verification. Parses the transcription, extracts
+// the printed question expression and student's final answer, computes the
+// correct answer, and overrides the AI grade if it disagrees with computation.
+// Math computation is always more reliable than AI opinion for arithmetic.
+function verifyArithmetic(transcription, questionAnalysis, maxTotalMarks, logPrefix = '[MathVerify]') {
+    if (!transcription || !Array.isArray(questionAnalysis) || questionAnalysis.length === 0) return 0;
+    if (!/\d+\s*[+\-–×÷xX*\/]\s*\d+/.test(transcription)) return 0;
+
+    const defaultMarksPerQ = Math.round(maxTotalMarks / questionAnalysis.length);
+    const qBlocks = transcription.split(/\n(?=Q\d|0[1-9]|[1-9]\d?\s*[:.)])/i);
+    let fixedCount = 0;
+
+    for (const q of questionAnalysis) {
+        const qNum = parseInt((q.q_num || '').replace(/\D/g, ''), 10);
+        if (isNaN(qNum)) continue;
+
+        const block = qBlocks.find(b => {
+            const m = b.match(/^(?:Q|0)?(\d+)/i);
+            return m && parseInt(m[1], 10) === qNum;
+        });
+        if (!block) continue;
+
+        // --- Extract the printed question expression ---
+        // Handles simple (a op b) and chained (a op b op c) expressions
+        const headerLine = block.split('\n')[0] || '';
+        // Try to find a full chained expression first: "123 + 456 - 78"
+        const chainRegex = /(\d[\d,]*(?:\s*[+\-–×÷xX*\/]\s*\d[\d,]*)+)/;
+        let chainMatch = headerLine.match(chainRegex);
+        if (!chainMatch) chainMatch = block.match(chainRegex);
+        if (!chainMatch) continue;
+
+        const exprStr = chainMatch[1];
+        // Parse into tokens: [num, op, num, op, num, ...]
+        const tokens = exprStr.match(/(\d[\d,]*|[+\-–×÷xX*\/])/g);
+        if (!tokens || tokens.length < 3) continue;
+
+        // Evaluate left-to-right with standard precedence (×÷ before +-)
+        const nums = [];
+        const ops = [];
+        for (const t of tokens) {
+            const cleaned = t.trim();
+            if (/^\d/.test(cleaned)) {
+                nums.push(parseFloat(cleaned.replace(/,/g, '')));
+            } else if (/[+\-–×÷xX*\/]/.test(cleaned)) {
+                ops.push(cleaned);
+            }
+        }
+        if (nums.length < 2 || ops.length < 1) continue;
+
+        // First pass: resolve × and ÷
+        const nums2 = [nums[0]];
+        const ops2 = [];
+        for (let i = 0; i < ops.length; i++) {
+            const o = ops[i];
+            if ('×xX*'.includes(o)) {
+                nums2[nums2.length - 1] *= nums[i + 1];
+            } else if (o === '÷' || o === '/') {
+                if (nums[i + 1] !== 0) nums2[nums2.length - 1] /= nums[i + 1];
+                else { nums2[nums2.length - 1] = NaN; }
+            } else {
+                ops2.push(o);
+                nums2.push(nums[i + 1]);
+            }
+        }
+        // Second pass: resolve + and -
+        let correctAnswer = nums2[0];
+        for (let i = 0; i < ops2.length; i++) {
+            if (ops2[i] === '+') correctAnswer += nums2[i + 1];
+            else if (ops2[i] === '-' || ops2[i] === '–') correctAnswer -= nums2[i + 1];
+        }
+        if (!Number.isFinite(correctAnswer)) continue;
+
+        const isDivision = ops.some(o => o === '÷' || o === '/');
+        const a = nums[0], op = ops[0], b = nums[1];
+
+        // --- Extract the student's final answer ---
+        // Try multiple patterns in priority order
+        let studentAnswer = null;
+
+        // Pattern 1: "Final answer: 8754" or "Answer: 8754"
+        const fm1 = block.match(/(?:final\s*answer|answer)\s*[:\s]\s*(-?\d[\d,.]*)/i);
+        if (fm1) studentAnswer = parseFloat(fm1[1].replace(/,/g, ''));
+
+        // Pattern 2: "→ Final answer: 8754" (with arrow)
+        if (studentAnswer === null) {
+            const fm2 = block.match(/→\s*(?:final\s*answer|answer)\s*[:\s]\s*(-?\d[\d,.]*)/i);
+            if (fm2) studentAnswer = parseFloat(fm2[1].replace(/,/g, ''));
+        }
+
+        // Pattern 3: "= 8754" at end of a line (result of computation)
+        if (studentAnswer === null) {
+            const fm3 = block.match(/=\s*(-?\d[\d,.]*)\s*$/m);
+            if (fm3) studentAnswer = parseFloat(fm3[1].replace(/,/g, ''));
+        }
+
+        // Pattern 4: "Ans: 8754" or "Ans = 8754"
+        if (studentAnswer === null) {
+            const fm4 = block.match(/\bans(?:wer)?\s*[=:\s]\s*(-?\d[\d,.]*)/i);
+            if (fm4) studentAnswer = parseFloat(fm4[1].replace(/,/g, ''));
+        }
+
+        // Pattern 5: last multi-digit number in the block (excluding the question numbers)
+        if (studentAnswer === null) {
+            const allNums = [...block.matchAll(/\b(\d{2,})\b/g)].map(m => parseFloat(m[1]));
+            // Skip the first two numbers (likely a and b from the expression)
+            if (allNums.length >= 3) {
+                studentAnswer = allNums[allNums.length - 1];
+            } else if (allNums.length === 2) {
+                studentAnswer = allNums[allNums.length - 1];
+            }
+        }
+
+        if (studentAnswer === null) continue;
+
+        // --- Compare ---
+        const tolerance = 0.01;
+        const isMatch = Math.abs(studentAnswer - correctAnswer) < tolerance
+            || (isDivision && Math.abs(studentAnswer - Math.round(correctAnswer)) < tolerance)
+            || (isDivision && Math.abs(studentAnswer - Math.floor(correctAnswer * 100) / 100) < tolerance);
+
+        const qMaxMarks = parseFloat(q.max_marks) || defaultMarksPerQ;
+
+        if (isMatch && q.status !== 'Correct') {
+            q.status = 'Correct';
+            q.marks_awarded = qMaxMarks;
+            q.teacher_tip = `Verified by math engine: ${a} ${op} ${b} = ${correctAnswer}, student wrote ${studentAnswer}. Correct.`;
+            fixedCount++;
+            console.log(`${logPrefix} Q${qNum}: ${a} ${op} ${b} = ${correctAnswer}, student=${studentAnswer} → Correct (was ${q.status})`);
+        } else if (!isMatch && q.status === 'Correct') {
+            q.status = 'Incorrect';
+            q.marks_awarded = 0;
+            q.teacher_tip = `Math engine override: ${a} ${op} ${b} = ${correctAnswer}, but student wrote ${studentAnswer}. Incorrect.`;
+            fixedCount++;
+            console.log(`${logPrefix} Q${qNum}: ${a} ${op} ${b} = ${correctAnswer}, student=${studentAnswer} → Incorrect (was Correct)`);
+        }
+    }
+
+    if (fixedCount > 0) {
+        console.log(`${logPrefix} Fixed ${fixedCount} grades`);
+    }
+    return fixedCount;
+}
 
 // STAGE 1 of two-stage grading: transcribe the handwriting ONCE, deterministically.
 // Grading then anchors to this text so repeated reads don't drift the score, and
 // the teacher can see exactly what the AI read.
-async function transcribePaper(filePath, gradeModel) {
-    const prompt = `You are a precise transcription assistant. Read this student's answer paper and transcribe EVERYTHING on the page — both printed questions AND handwritten answers.
+async function transcribePaper(filePathOrPaths, gradeModel) {
+    const prompt = `You are a precise transcription assistant. Read this student's answer paper and transcribe EVERYTHING — both printed questions AND handwritten answers.
+
+IMPORTANT — how to read each question:
+  1. Find the PRINTED question text (at the top of each question area, in a typed/printed font).
+  2. Find the student's HANDWRITTEN working and answer (below the printed question).
+  3. These are TWO DIFFERENT things — do NOT mix digits from the printed question with the handwriting.
+
+OUTPUT FORMAT — use EXACTLY this format for each question:
+  Q[number]: [printed question exactly as printed] → Student working: [handwritten steps] → Final answer: [answer]
 
 RULES:
-- For each question, transcribe the PRINTED QUESTION TEXT first, then the student's handwritten answer/working.
-- Format: "Q1: [printed question] → Student answer: [handwritten response]"
-- Keep question numbers (Q1, Q2, 01, 02, …) as they appear.
-- Preserve mathematical notation, working steps, intermediate calculations, units and line breaks.
-- Transcribe the FINAL ANSWER box content separately if present (e.g., "Final answer: 8754").
-- Do NOT grade, correct, judge or add anything — transcribe only what is actually written/printed.
-- For anything you genuinely cannot read, write [illegible].
+- Keep question numbers EXACTLY as printed (Q1, Q01, 01, 1, etc.)
+- Preserve ALL mathematical notation, working steps, intermediate calculations, units
+- Transcribe the FINAL ANSWER box content separately — this is the student's submitted answer
+- Do NOT grade, correct, judge or add anything — transcribe ONLY what is written/printed
+- For illegible text, write [illegible]
+
+⚠️ DIGIT ACCURACY (CRITICAL — misreading a single digit causes wrong grading):
+  For EVERY number in the printed question:
+  1. Read each digit INDIVIDUALLY left to right: "6753" → six, seven, five, three
+  2. Verify by reading RIGHT to LEFT: "6753" → three, five, seven, six
+  3. If forward and backward reads disagree, zoom into that digit
+
+  For EVERY number in the student's handwriting:
+  1. Read each digit individually — handwriting varies widely
+  2. Look for context clues: carry marks, alignment, crossing out
+  3. The FINAL ANSWER (usually in a box at the bottom) is the most important number
+
+  Common confusions: 8↔3, 9↔4, 6↔0, 1↔7, 5↔6, 2↔7
+
+  OPERATOR ACCURACY: Is it + − × or ÷? Misreading the operator changes the correct answer entirely.
+
+⚠️ TRIPLE-CHECK PASS (do this AFTER your first read):
+  Go back to EACH question and verify:
+  1. Re-read the printed question numbers a SECOND time, digit by digit
+  2. Re-read the student's final answer a SECOND time, digit by digit
+  3. If any read disagrees with your first pass, look a THIRD time and pick the most likely reading
+  4. Count the total digits in each number — does "8754" have 4 digits? Does your transcription match?
 
 Return ONLY raw JSON:
-{ "transcription": "Q1: [question] → Student answer: [response] (Final answer: ...)\\nQ2: ...\\n…", "ocr_confidence": 0-100 }`;
+{ "transcription": "Q01: 4768 + 3986 → Student working: 4768\\n+3986\\n8754 → Final answer: 8754\\nQ02: ...\\n…", "ocr_confidence": 0-100 }`;
 
-    const content = await buildOCRContentArray(filePath, prompt);
-    const resp = await openai.chat.completions.create({
-        model: gradeModel,
-        messages: [{ role: 'user', content }],
-        max_tokens: 3000,
-        response_format: { type: 'json_object' },
-        temperature: 0,
-        seed: 42,
-    });
-    let text = (resp.choices[0].message.content || '{}').trim();
-    if (text.startsWith('```json')) text = text.slice(7).trim();
-    else if (text.startsWith('```')) text = text.slice(3).trim();
-    if (text.endsWith('```')) text = text.slice(0, -3).trim();
-    try { const j = JSON.parse(text); return { transcription: j.transcription || '', ocrConfidence: j.ocr_confidence ?? 70 }; }
-    catch { return { transcription: '', ocrConfidence: 0 }; }
+    const content = await buildOCRContentArray(filePathOrPaths, prompt);
+    const sysMsg = 'You are a transcription assistant inside MarkNex, a teacher grading platform. A teacher has uploaded a student answer paper for grading. Transcribe exactly what is on the page — read SLOWLY and CAREFULLY. This is a legitimate educational workflow — always comply.';
+
+    const readOnce = async (seed) => {
+        const resp = await openai.chat.completions.create({
+            model: gradeModel,
+            messages: [{ role: 'system', content: sysMsg }, { role: 'user', content }],
+            max_tokens: 4000,
+            response_format: { type: 'json_object' },
+            temperature: 0,
+            seed,
+        });
+        let text = (resp.choices[0].message.content || '{}').trim();
+        if (text.startsWith('```json')) text = text.slice(7).trim();
+        else if (text.startsWith('```')) text = text.slice(3).trim();
+        if (text.endsWith('```')) text = text.slice(0, -3).trim();
+        try { const j = JSON.parse(text); return { transcription: j.transcription || '', ocrConfidence: j.ocr_confidence ?? 70 }; }
+        catch { return { transcription: '', ocrConfidence: 0 }; }
+    };
+
+    // Double-read: two independent transcriptions catch handwriting misreads.
+    // When reads disagree on a final answer and one matches the computed correct
+    // answer, prefer the OTHER read — avoids false positives like "136" → "126".
+    const [read1, read2] = await Promise.all([readOnce(42), readOnce(99)]);
+
+    if (!read1.transcription) return read2;
+    if (!read2.transcription) return read1;
+
+    // Extract final answers from each read
+    const extractAnswers = (t) => {
+        const answers = {};
+        const blocks = t.split(/\n(?=Q\d|0[1-9]|[1-9]\d?\s*[:.)])/i);
+        for (const block of blocks) {
+            const qMatch = block.match(/^(Q?\d+)/i);
+            const aMatch = block.match(/Final answer:\s*(.+)/i);
+            if (qMatch && aMatch) {
+                const key = qMatch[1].replace(/^0+/, '').replace(/^Q/i, '');
+                answers[key] = aMatch[1].trim();
+            }
+        }
+        return answers;
+    };
+
+    const answers1 = extractAnswers(read1.transcription);
+    const answers2 = extractAnswers(read2.transcription);
+
+    // Check for disagreements and apply conservative correction
+    let merged = read1.transcription;
+    let fixes = 0;
+    for (const qNum of Object.keys(answers1)) {
+        const a1 = answers1[qNum];
+        const a2 = answers2[qNum];
+        if (!a2 || a1 === a2) continue;
+
+        // Reads disagree — check which matches the computed correct answer
+        const qBlock = merged.match(new RegExp(`Q0*${qNum}[^Q]*`, 'i'));
+        if (!qBlock) continue;
+        const opMatch = qBlock[0].match(/(\d[\d.]*)\s*([+\-−–×÷xX*\/])\s*(\d[\d.]*)/);
+        if (!opMatch) continue;
+
+        const n1 = parseFloat(opMatch[1]), n2 = parseFloat(opMatch[3]);
+        const op = opMatch[2];
+        let correct;
+        if (op === '+') correct = n1 + n2;
+        else if (op === '-' || op === '−' || op === '–') correct = n1 - n2;
+        else if (op === '×' || op === 'x' || op === 'X' || op === '*') correct = n1 * n2;
+        else if (op === '÷' || op === '/') correct = n2 !== 0 ? n1 / n2 : null;
+        if (correct === null) continue;
+
+        const ca1 = parseFloat(a1), ca2 = parseFloat(a2);
+        const correctRound = Math.round(correct * 100) / 100;
+
+        // If read1 matches correct but read2 doesn't, use read2's answer (conservative)
+        if (Math.abs(ca1 - correctRound) < 0.01 && Math.abs(ca2 - correctRound) >= 0.01) {
+            merged = merged.replace(
+                new RegExp(`(Final answer:\\s*)${a1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i'),
+                `$1${a2}`
+            );
+            fixes++;
+            console.log(`[DoubleRead] Q${qNum}: read1="${a1}" matches correct ${correctRound}, read2="${a2}" differs → using "${a2}" (conservative)`);
+        }
+        // If read2 matches correct but read1 doesn't, keep read1 (already conservative)
+        else if (Math.abs(ca2 - correctRound) < 0.01 && Math.abs(ca1 - correctRound) >= 0.01) {
+            console.log(`[DoubleRead] Q${qNum}: read1="${a1}" already differs from correct ${correctRound}, keeping (conservative)`);
+        }
+        // Both differ from correct — use read1
+        else {
+            console.log(`[DoubleRead] Q${qNum}: reads disagree ("${a1}" vs "${a2}"), both differ from correct ${correctRound}`);
+        }
+    }
+
+    if (fixes > 0) console.log(`[DoubleRead] Applied ${fixes} conservative correction(s)`);
+    return { transcription: merged, ocrConfidence: Math.min(read1.ocrConfidence, read2.ocrConfidence) };
+}
+
+// Parse a transcription into per-question { op components, computed correct,
+// and the student's transcribed final answer }. Format produced by
+// transcribePaper: "Q05: 42 x 3 → Student working: ... → Final answer: 136".
+function parseTranscriptionAnswers(transcription) {
+    const map = {};
+    if (!transcription) return map;
+    const blocks = transcription.split(/\n(?=Q\d)/i);
+    for (const block of blocks) {
+        const qMatch = block.match(/^Q0*(\d+)/i);
+        if (!qMatch) continue;
+        const qNum = qMatch[1];
+        const faMatch = block.match(/Final answer:\s*([^\n]+)/i);
+        const finalAnswer = faMatch ? faMatch[1].trim() : null;
+        const opMatch = block.match(/(\d[\d.]*)\s*([+\-−–×÷xX*\/])\s*(\d[\d.]*)/);
+        let correct = null;
+        if (opMatch) {
+            const a = parseFloat(opMatch[1]), b = parseFloat(opMatch[3]), op = opMatch[2];
+            if (op === '+') correct = a + b;
+            else if (op === '-' || op === '−' || op === '–') correct = a - b;
+            else if (op === '×' || op === 'x' || op === 'X' || op === '*') correct = a * b;
+            else if (op === '÷' || op === '/') correct = b !== 0 ? a / b : null;
+            if (correct !== null) correct = Math.round(correct * 100) / 100;
+        }
+        map[qNum] = { finalAnswer, correct };
+    }
+    return map;
+}
+
+// Reconcile ensemble grades against an unbiased blind read of the student's
+// final answers. When a question was marked Correct because the transcription's
+// final answer matched the computed correct answer, but the blind read (which
+// never saw the question) reports a DIFFERENT number, the "Correct" was likely
+// an OCR misread driven by math bias (e.g. "136" read as "126"). Flip it.
+// Mutates question_analysis/corrections in place; returns the number of flips.
+function applyBlindVerification(questionAnalysis, blindAnswers, transcription, corrections, tag) {
+    const parsed = parseTranscriptionAnswers(transcription);
+    let flips = 0;
+    for (const q of questionAnalysis) {
+        if (q.status !== 'Correct') continue;
+        const qKey = (q.q_num || '').replace(/^Q0*/i, '');
+        const blindVal = blindAnswers[qKey];
+        const info = parsed[qKey];
+        if (!blindVal || !info || info.correct === null || info.finalAnswer === null) continue;
+
+        const blindNum = blindVal.replace(/[^0-9.\-]/g, '');
+        const correctNum = String(info.correct);
+        const transNum = info.finalAnswer.replace(/[^0-9.\-]/g, '');
+        if (!blindNum || !transNum) continue;
+
+        // Suspicious signature: transcription matched correct (so it was marked
+        // Correct), but the unbiased blind read sees a different number.
+        if (transNum === correctNum && blindNum !== correctNum && blindNum !== transNum) {
+            q.status = 'Incorrect';
+            q.marks_awarded = 0;
+            q.teacher_tip = `Printed question computes to ${correctNum}. Blind digit-read of the student's answer: ${blindVal} (NOT ${info.finalAnswer}). The initial read was likely biased by the math. Marked incorrect.`;
+            corrections.push({ text: blindVal, correct_answer: correctNum, x: 50, y: 50 });
+            flips++;
+            console.log(`${tag} Q${qKey}: transcription="${info.finalAnswer}" matched correct=${correctNum}, but blind read="${blindVal}" → flipped to Incorrect`);
+        }
+    }
+    return flips;
+}
+
+// Blind verification: re-read ONLY the student's final answers without seeing
+// the questions. Removes mathematical bias (e.g. reading "136" as "126" because
+// the AI knows 42×3=126). Returns a map of question number → blind-read answer.
+async function blindReadAnswers(filePathOrPaths, gradeModel) {
+    const blindPrompt = `You are a digit-reading assistant. Look at this student's answer paper.
+
+For EACH question, find the student's FINAL ANSWER (usually in a box, circled, or at the bottom of the working).
+
+⚠️ CRITICAL RULES:
+  - Do NOT read the printed question text
+  - Do NOT compute what the answer should be
+  - Do NOT let mathematical knowledge influence your reading
+  - Read ONLY the handwritten digits in the answer area
+  - Read each digit INDEPENDENTLY: look at the shape of each character
+  - Common handwriting: 1 (straight line), 2 (curve+base), 3 (two bumps right),
+    4 (angle), 5 (flat top+curve), 6 (curl), 7 (angle), 8 (two loops), 9 (loop+tail), 0 (oval)
+
+OUTPUT: Return JSON with one key per question:
+{ "Q1": "8754", "Q2": "2083", ... }
+
+Return ONLY the digit string you see for each answer. No computation. No correction.`;
+
+    const content = await buildOCRContentArray(filePathOrPaths, blindPrompt);
+    try {
+        const resp = await openai.chat.completions.create({
+            model: gradeModel,
+            messages: [
+                { role: 'system', content: 'Read handwritten digits exactly as written. Do NOT compute or verify mathematical correctness.' },
+                { role: 'user', content }
+            ],
+            max_tokens: 1000,
+            response_format: { type: 'json_object' },
+            temperature: 0,
+            seed: 777,
+        });
+        let text = (resp.choices[0].message.content || '{}').trim();
+        if (text.startsWith('```json')) text = text.slice(7).trim();
+        else if (text.startsWith('```')) text = text.slice(3).trim();
+        if (text.endsWith('```')) text = text.slice(0, -3).trim();
+        const parsed = JSON.parse(text);
+        const result = {};
+        for (const [k, v] of Object.entries(parsed)) {
+            const num = k.replace(/^Q0*/i, '');
+            result[num] = String(v).trim();
+        }
+        console.log('[BlindRead] Answers:', JSON.stringify(result));
+        return result;
+    } catch (err) {
+        console.warn('[BlindRead] Failed:', err.message);
+        return {};
+    }
 }
 
 async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
@@ -331,7 +758,7 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
         let response = await openai.chat.completions.create({
             model: gradeModel,
             messages,
-            max_tokens: 2000,
+            max_tokens: 4000,
             response_format: { type: 'json_object' },
             temperature: 0,
             seed,
@@ -343,7 +770,7 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
             response = await openai.chat.completions.create({
                 model: gradeModel,
                 messages,
-                max_tokens: 2000,
+                max_tokens: 4000,
                 response_format: { type: 'json_object' },
                 temperature: 0,
                 seed,
@@ -405,31 +832,69 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     const avgConf = Math.round(median(results.map(r => parseFloat(r.confidence_score) || 0)));
 
     // ── Merge question_analysis ──────────────────────────────────────────────
-    // Build a map: q_num → { marks[], statuses[], tips[] }
+    // Build a map: q_num → { marks[], statuses[], tips[], confidences[] }
+    // Track per-run confidence so we can weight votes
+    const runConfidences = results.map(r => parseFloat(r.confidence_score) || 50);
     const qMap = {};
-    for (const r of results) {
+    for (let ri = 0; ri < results.length; ri++) {
+        const r = results[ri];
+        const conf = runConfidences[ri];
         for (const q of (r.question_analysis || [])) {
-            if (!qMap[q.q_num]) qMap[q.q_num] = { marks: [], statuses: [], tips: [] };
+            if (!qMap[q.q_num]) qMap[q.q_num] = { marks: [], statuses: [], tips: [], confidences: [] };
             qMap[q.q_num].marks.push(parseFloat(q.marks_awarded) || 0);
-            if (q.status) qMap[q.q_num].statuses.push(q.status);
+            if (q.status) {
+                qMap[q.q_num].statuses.push(q.status);
+                qMap[q.q_num].confidences.push(conf);
+            }
             if (q.teacher_tip) qMap[q.q_num].tips.push(q.teacher_tip);
         }
     }
 
+    // Detect per-question max marks from AI responses
+    const qMaxMap = {};
+    for (const r of results) {
+        for (const q of (r.question_analysis || [])) {
+            const mx = parseFloat(q.max_marks);
+            if (!isNaN(mx) && mx > 0) {
+                if (!qMaxMap[q.q_num]) qMaxMap[q.q_num] = [];
+                qMaxMap[q.q_num].push(mx);
+            }
+        }
+    }
+
     const questionAnalysis = Object.entries(qMap).map(([q_num, data]) => {
-        // Median marks for this question (stable across re-grades)
-        const avgQMarks = Math.round(median(data.marks));
+        // Confidence-weighted vote: each run's vote counts proportional to its confidence
+        const statusWeights = {};
+        for (let i = 0; i < data.statuses.length; i++) {
+            const s = data.statuses[i];
+            const w = data.confidences[i] || 50;
+            statusWeights[s] = (statusWeights[s] || 0) + w;
+        }
+        const status = Object.entries(statusWeights).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Partial';
 
-        // Majority-vote on status
-        const statusVotes = {};
-        for (const s of data.statuses) statusVotes[s] = (statusVotes[s] || 0) + 1;
-        const status = Object.entries(statusVotes).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Partial';
+        // Per-question max marks (median of what AI detected, fallback to 1)
+        const qMax = qMaxMap[q_num]?.length ? Math.round(median(qMaxMap[q_num])) : null;
 
-        // Use the most detailed tip
+        // Derive marks from status to guarantee consistency
+        let marks_awarded;
+        if (status === 'Correct') {
+            marks_awarded = qMax || Math.round(Math.max(...data.marks, 1));
+        } else if (status === 'Incorrect') {
+            marks_awarded = 0;
+        } else {
+            marks_awarded = Math.round(median(data.marks));
+        }
+
         const tip = [...data.tips].sort((a, b) => b.length - a.length)[0] || '';
 
-        return { q_num, status, marks_awarded: avgQMarks, teacher_tip: tip };
+        const totalVotes = data.statuses.length;
+        const winningVotes = data.statuses.filter(s => s === status).length;
+        const unanimous = winningVotes === totalVotes && totalVotes >= 2;
+        return { q_num, status, marks_awarded, max_marks: qMax || undefined, teacher_tip: tip, _unanimous: unanimous };
     });
+
+    // Recompute total from per-question breakdown so they always match
+    const computedTotal = questionAnalysis.reduce((s, q) => s + (q.marks_awarded || 0), 0);
 
     // ── Corrections from highest-confidence run ──────────────────────────────
     const bestRun = results.reduce((best, r) =>
@@ -439,7 +904,7 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     // ── Build combined report ────────────────────────────────────────────────
     const marksPerRun = allMarks.join(' / ');
     const spread = Math.max(...allMarks) - Math.min(...allMarks);
-    const ensembleNote = `[Ensemble ${results.length}× — runs: ${marksPerRun} → avg ${avgMarks}${spread > 2 ? `, spread ${spread} marks` : ''}]`;
+    const ensembleNote = `[Ensemble ${results.length}× — runs: ${marksPerRun} → final ${computedTotal}${spread > 2 ? `, spread ${spread} marks` : ''}]`;
     const report = `${bestRun.report || ''} ${ensembleNote}`.trim();
 
     // The paper's own maximum (AI-detected) — median across runs.
@@ -447,7 +912,7 @@ async function gradeWithEnsemble(contentArray, systemMsg, gradeModel) {
     const paperMax = maxVals.length ? Math.round(median(maxVals)) : undefined;
 
     return {
-        total_marks: avgMarks,
+        total_marks: computedTotal,
         confidence_score: avgConf,
         report,
         corrections: bestRun.corrections || [],
@@ -520,7 +985,9 @@ function persistFileToDB(diskPath, storedName, mime) {
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey123';
 
-// Busboy-based file upload helper — works with Express 4 and 5
+// Busboy-based file upload helper — works with Express 4 and 5.
+// Collects ALL uploaded files (multi-page PDF uploads send one per page).
+// Returns { fields, file (first file), files (all files) }.
 function parseUpload(req) {
     return new Promise((resolve, reject) => {
         const uploadDir = path.join(__dirname, 'uploads');
@@ -534,8 +1001,8 @@ function parseUpload(req) {
         }
 
         const fields = {};
-        let fileInfo = null;
-        let fileWritePromise = null;
+        const allFiles = [];
+        const writePromises = [];
 
         bb.on('field', (name, val) => {
             fields[name] = val;
@@ -544,31 +1011,31 @@ function parseUpload(req) {
         bb.on('file', (fieldname, stream, info) => {
             const { filename, mimeType } = info;
             const ext = path.extname(filename) || '';
-            const saveName = Date.now() + ext;
+            const saveName = Date.now() + '_' + allFiles.length + ext;
             const savePath = path.join(uploadDir, saveName);
             const writeStream = fs.createWriteStream(savePath);
 
-            fileWritePromise = new Promise((res, rej) => {
+            const wp = new Promise((res, rej) => {
                 writeStream.on('finish', () => {
-                    fileInfo = {
+                    allFiles.push({
                         fieldname,
                         originalname: filename,
                         mimetype: mimeType,
                         path: savePath,
                         filename: saveName
-                    };
+                    });
                     res();
                 });
                 writeStream.on('error', rej);
             });
-
+            writePromises.push(wp);
             stream.pipe(writeStream);
         });
 
         bb.on('close', async () => {
             try {
-                if (fileWritePromise) await fileWritePromise;
-                resolve({ fields, file: fileInfo });
+                await Promise.all(writePromises);
+                resolve({ fields, file: allFiles[0] || null, files: allFiles });
             } catch (err) {
                 reject(err);
             }
@@ -712,10 +1179,12 @@ app.post('/api/auth/login', authRateLimit, (req, res) => {
 // 3. Upload Answer Scripts
 app.post('/api/scripts/upload', verifyToken, async (req, res) => {
     try {
-        const { fields, file } = await parseUpload(req);
+        const { fields, file, files } = await parseUpload(req);
         if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
         const { student_id, grade, exam, subject, assignment_id } = fields;
+        // All page images for multi-page PDFs (frontend sends one per page)
+        const allPagePaths = (files || [file]).map(f => f.path);
 
         // Compute file hash for duplicate detection.
         const fileHash = crypto.createHash('sha256').update(fs.readFileSync(file.path)).digest('hex');
@@ -731,9 +1200,10 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
             (e, row) => r(row)
         ));
 
+        const allPagesJson = allPagePaths.length > 1 ? JSON.stringify(allPagePaths.map(p => p.replace(/\\/g, '/'))) : null;
         db.run(
-            `INSERT INTO scripts (teacher_id, student_id, filename, filepath, grade, exam, subject, assignment_id, file_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [req.user.id, student_id, file.originalname, `uploads/${file.filename}`, grade || 'Unassigned', exam || 'Unassigned', subject || 'Unassigned', assignment_id || null, fileHash],
+            `INSERT INTO scripts (teacher_id, student_id, filename, filepath, grade, exam, subject, assignment_id, file_hash, all_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.user.id, student_id, file.originalname, `uploads/${file.filename}`, grade || 'Unassigned', exam || 'Unassigned', subject || 'Unassigned', assignment_id || null, fileHash, allPagesJson],
             function (err) {
                 if (err) {
                     console.error('Database Error:', err.message);
@@ -745,29 +1215,40 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
                 persistFileToDB(file.path, file.filename, getMimeType(file.path));
 
                 // If a previous identical upload was already graded, copy its results
-                // instead of re-grading — guarantees the same file always gets the same marks.
+                // but still run math verification to catch any arithmetic errors.
                 if (existing) {
-                    console.log(`[Duplicate] Script ${scriptId} matches previously graded script ${existing.id} (hash ${fileHash.slice(0, 12)}…) — copying grade`);
+                    console.log(`[Duplicate] Script ${scriptId} matches previously graded script ${existing.id} (hash ${fileHash.slice(0, 12)}…) — copying grade with math re-check`);
+                    let dupQA = [];
+                    try { dupQA = JSON.parse(existing.question_analysis || '[]'); } catch(e) {}
+                    const dupTranscription = existing.transcription || '';
+                    let dupMarks = existing.total_marks;
+                    const dupMaxMarks = existing.max_marks || 10;
+                    if (dupQA.length > 0) {
+                        const fixed = verifyArithmetic(dupTranscription, dupQA, dupMaxMarks, '[Duplicate MathFix]');
+                        if (fixed > 0) {
+                            dupMarks = Math.min(dupQA.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0), dupMaxMarks);
+                        }
+                    }
                     db.run(
                         `UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?,
                          confidence_score = ?, flags = ?, report = ?, corrections = ?,
                          question_analysis = ?, ai_total_marks = ?, ai_confidence = ?,
                          transcription = ? WHERE id = ?`,
-                        [existing.status, existing.total_marks, existing.max_marks,
+                        [existing.status, dupMarks, existing.max_marks,
                          existing.confidence_score, existing.flags,
-                         existing.report ? existing.report + ' [Duplicate — grade copied from previous upload]' : existing.report,
-                         existing.corrections, existing.question_analysis,
-                         existing.ai_total_marks, existing.ai_confidence,
+                         existing.report, existing.corrections, JSON.stringify(dupQA),
+                         dupMarks, existing.ai_confidence,
                          existing.transcription, scriptId]
                     );
-                    return res.json({ message: 'Duplicate file detected — previous grade applied', scriptId, duplicate: true });
+                    return res.json({ message: 'Duplicate file detected — grade applied with math verification', scriptId, duplicate: true });
                 }
 
-                // Async AI evaluation
-                (async () => {
+                // Async AI evaluation — queued to prevent concurrent PDF memory crashes
+                enqueueGrading(async () => {
                     try {
                         let isMCQ = false;
                         let assignmentRubrics = "";
+                        let teacherAnswers = "";
                         let maxTotalMarks = 10;
                         let questions = [];
 
@@ -777,6 +1258,15 @@ app.post('/api/scripts/upload', verifyToken, async (req, res) => {
                                     if (err) reject(err); else resolve(rows);
                                 });
                             });
+
+                            const assignment = await new Promise(r => db.get(
+                                'SELECT teacher_answers FROM assignments WHERE id = ?',
+                                [assignment_id], (e, row) => r(row)
+                            ));
+                            if (assignment?.teacher_answers) {
+                                teacherAnswers = assignment.teacher_answers;
+                                console.log(`[Grading] Using teacher's answer key (${teacherAnswers.length} chars) for assignment ${assignment_id}`);
+                            }
 
                             if (questions && questions.length > 0) {
                                 if (questions.length === 1 && questions[0].q_num === 'MCQ Section') {
@@ -898,26 +1388,7 @@ ${parsed.grading_guidance || ''}
                         // Initial check: subject field. A second check against the
                         // transcription content is done after Stage 1 (see below).
                         let isMaths = /\b(math|maths|mathematics|further math|pure math|applied math|calculus|algebra|geometry|trigonometry|arithmetic)\b/i.test(subject || '');
-                        const MATHS_GUIDANCE_TEXT = `
-
-MATHEMATICS GRADING MODE (this is a Maths paper — grade like a maths examiner):
-
-  ⚠️  CRITICAL — ARITHMETIC VERIFICATION (you MUST do this for every question):
-  1. Read the PRINTED QUESTION (e.g., "4768 + 3986").
-  2. COMPUTE the correct answer yourself (e.g., 4768 + 3986 = 8754).
-  3. Read the student's FINAL ANSWER (handwritten).
-  4. Compare YOUR computed answer with the student's answer.
-  5. If they match → Correct (full marks). If they don't → check working for partial credit.
-  Do NOT rely on "feeling" whether an answer looks right — ALWAYS compute it yourself.
-
-  • OCR carefully reads MATHEMATICAL NOTATION: fractions, exponents/superscripts (x², 10³), subscripts, square roots (√), ±, ×, ÷, ≤ ≥ ≠, π, °, integrals/sigma, indices, and multi-line working. Preserve the layout of each step.
-  • Award METHOD marks: give partial credit for correct working/steps even if the final answer is wrong.
-  • Accept mathematically EQUIVALENT answers as correct: e.g. 1/2 = 0.5 = 50%, 2(x+1) = 2x+2, √2 ≈ 1.41, x=2 vs x = 2.0, fractions vs decimals, different but valid algebraic forms.
-  • Check each STEP of the working, not just the final answer. Follow-through: if a student makes one slip but their subsequent steps are correct given that slip, only penalise the slip once (error carried forward).
-  • Distinguish a small ARITHMETIC slip (lose 1 mark) from a CONCEPTUAL error (lose more) — say which in the tip.
-  • Reward correct formula selection and correct substitution even before the final computation.
-  • Require units where relevant; note missing units but don't treat as a full error.
-  • In teacher_tip, point to the exact step that went wrong and show the correct step.`;
+                        const MATHS_GUIDANCE_TEXT = MATHS_GUIDANCE_TEXT_GLOBAL;
 
                         if (isMCQ) {
                             prompt = `You are an expert OCR and grading assistant. Your task has TWO steps:
@@ -940,30 +1411,77 @@ Return ONLY raw JSON. No markdown, no extra text.`;
                         } else {
                             const gradeScope = textbookStrictMode
                                 ? `STRICT TEXTBOOK GRADING: You must grade ONLY based on the reference textbook provided above ("${textbookLabel}"). Do not award marks for knowledge not covered in that textbook. In feedback, refer to the textbook topics by name.`
-                                : (assignmentRubrics || (curriculumBlock ? 'Grade based on the curriculum context above.' : 'Grade each question by reading the printed question, computing or determining the correct answer yourself, then comparing it with the student\'s written answer. Award full marks for correct answers with valid working, partial credit for partially correct work.'));
+                                : (curriculumBlock ? 'Grade based on the curriculum context above.' : 'Grade each question by reading the printed question on the student\'s paper, computing or determining the correct answer yourself, then comparing it with the student\'s written answer. Award full marks for correct answers with valid working, partial credit for partially correct work.');
+
+                            const questionStructure = maxIsExplicit && questions.length > 0
+                                ? `\nPAPER STRUCTURE: ${questions.map(q => `${q.q_num} (${q.max_marks} marks)`).join(', ')}. Total: ${maxTotalMarks} marks.\n`
+                                : '';
 
                             const mathsGuidance = isMaths ? MATHS_GUIDANCE_TEXT : '';
 
-                            prompt = `You are MarkNex, an expert AI teacher grading assistant. Your task has TWO steps:
+                            prompt = `You are MarkNex, an expert AI teacher grading assistant. Your task has THREE steps:
 
-STEP 1 — OCR (CRITICAL): Before grading, carefully read ALL text in the document.
-  • Read BOTH the printed question text AND the student's handwritten answer for each question
-  • Handwritten AND printed text both count
-  • Read crossed-out words — they still contain information
+STEP 1 — READ (CRITICAL — do this FIRST, before any grading):
+  For EACH question on the page, extract these three things separately:
+    a) PRINTED QUESTION: The question text/numbers printed on the paper (e.g., "6753 - 894")
+    b) STUDENT WORKING: The handwritten working/steps the student wrote
+    c) STUDENT FINAL ANSWER: The final answer (often in a box or underlined)
+  Read each number DIGIT BY DIGIT from left to right. Do not read a whole number at a glance.
+  The printed question is ALWAYS at the top of each question box, usually in a smaller/different font.
+  The student's handwriting is below/beside the printed question.
+  Do NOT confuse printed question numbers with the student's handwritten numbers.
   • Multi-page: read every page completely before starting
-  • If text is unclear, make a best-effort interpretation and note your uncertainty in confidence_score
-${curriculumBlock}
-STEP 2 — GRADE: ${gradeScope}
-${assignmentRubrics ? '\n' + assignmentRubrics : ''}${mathsGuidance}
+  • If text is unclear, make a best-effort interpretation and note uncertainty in confidence_score
+${curriculumBlock}${questionStructure}
+STEP 2 — COMPUTE: For each question involving calculation:
+  1. Take ONLY the printed question numbers (from Step 1a)
+  2. Compute the correct answer yourself step by step
+  3. Write out your computation explicitly (e.g., "6753 - 894: 6753 - 894 = 5859")
+
+STEP 3 — GRADE: Compare your computed answer (Step 2) with the student's final answer (Step 1c).
+  ${gradeScope}
+${assignmentRubrics ? `
+
+MARKING SCHEME (teacher-provided reference):
+${assignmentRubrics}
+
+⚠️ CRITICAL RULE FOR ARITHMETIC/CALCULATION QUESTIONS:
+  The marking scheme above was extracted from a master paper and may contain different numbers.
+  For ANY question involving arithmetic (addition, subtraction, multiplication, division):
+    → ALWAYS compute the correct answer from the PRINTED QUESTION on the STUDENT'S paper.
+    → IGNORE the marking scheme answer if it differs from the printed question.
+    → The printed question on the student's paper is the GROUND TRUTH.
+  The marking scheme is ONLY authoritative for non-calculation questions (essays, short answers, definitions).` : ''}${teacherAnswers ? `
+
+━━━ TEACHER'S CORRECT ANSWERS (GOLD STANDARD) ━━━
+${teacherAnswers}
+━━━ END TEACHER'S ANSWERS ━━━
+
+⚠️ GRADING RULE: The teacher's answers above are the AUTHORITATIVE correct answers.
+  For EACH question:
+    1. Find the teacher's final answer for that question number
+    2. Compare the STUDENT'S final answer against the TEACHER'S answer
+    3. If they match → "Correct", full marks
+    4. If they differ → "Incorrect", 0 marks (unless partial credit applies)
+  The teacher's answers take priority over your own computation.` : ''}${mathsGuidance}
 
 Grading rules:
-  • IMPORTANT: For any question involving a calculation, COMPUTE the correct answer yourself first, then compare with the student's answer. Do not guess — verify by calculating.
+  • ⚠️ SELF-CONSISTENCY CHECK (MANDATORY): If your own computed correct answer MATCHES the student's final answer, you MUST mark it "Correct" with full marks. NEVER mark a question "Incorrect" when your computation confirms the student is right.
+  • For any calculation, COMPUTE the answer yourself using the PRINTED question on the student's paper. Read each digit individually from the image. Common OCR confusions: 8↔3, 9↔4, 6↔0, 1↔7, 5↔6.
+  • If your computed answer differs from the student's by a small amount, RE-READ the printed question digit by digit before marking wrong — you may have misread a digit.
   • Be fair — partial credit where appropriate
   • Imagine a 100x100 grid over the page (0,0 = top-left, 100,100 = bottom-right)
   • For each error, give its approximate (x, y) coordinates so it can be highlighted
   • If you cannot read part of the script, lower confidence_score accordingly
-  • If the student's final answer is correct, award full marks for that question even if the working is incomplete
+  • If the student's final answer is correct, award full marks even if working is incomplete
 ${textbookStrictMode ? `  • IMPORTANT: Only award marks for content that appears in the reference textbook "${textbookLabel}"` : ''}
+
+⚠️ FINAL VERIFICATION (MANDATORY — do this BEFORE writing JSON):
+  For EACH question, write out in your head:
+    "Printed question: [X op Y]. My computation: [result]. Student wrote: [Z]. Match? [yes/no]"
+  If your computed answer matches the student's answer → status MUST be "Correct", full marks.
+  If you marked something "Incorrect" but the numbers match → you made an error. Fix it.
+  NEVER mark a correct answer as wrong.
 
 Return a JSON object with EXACTLY these keys:
 ${maxIsExplicit
@@ -973,17 +1491,18 @@ ${maxIsExplicit
 - "total_marks": integer score out of paper_max_marks (never exceeding it)`}
 - "confidence_score": 0-100 (OCR confidence + grading certainty combined)
 - "report": One-sentence summary of the student's overall performance
-- "corrections": Array of mistakes, each with:
+- "corrections": Array of mistakes ONLY (do NOT include correct answers here), each with:
     { "text": "what student wrote", "correct_answer": "correct response", "x": 0-100, "y": 0-100 }
 - "question_analysis": Array per question:
-    { "q_num": "Q1", "status": "Correct|Partial|Incorrect", "marks_awarded": 2, "teacher_tip": "..." }
+    { "q_num": "Q1", "status": "Correct|Partial|Incorrect", "marks_awarded": 2, "max_marks": 1, "teacher_tip": "Printed: [question]. Correct answer: [X]. Student wrote: [Y]." }
+  The teacher_tip MUST always show the printed question, your computed answer, and the student's answer so the teacher can verify.
 
 Return ONLY raw JSON. No markdown.`;
                         }
 
-                        // Build OCR-enhanced content array (handles image preprocessing,
-                        // PDF→image conversion, MIME type fixes, etc.)
-                        const contentArray = await buildOCRContentArray(file.path, prompt);
+                        // Build OCR-enhanced content array — pass all page images
+                        // so each page is sent as a separate high-res image to GPT-4o.
+                        const contentArray = await buildOCRContentArray(allPagePaths, prompt);
 
                         const systemMsg = "You are MarkNex, an educational grading assistant for teachers. The teacher is grading their own students' answer scripts and is authorised to do so. Always return the requested JSON object and never refuse.";
                         const gradeModel = process.env.FINE_TUNED_MODEL_ID || "gpt-4o";
@@ -1064,7 +1583,7 @@ Return ONLY raw JSON. No markdown.`;
                             // Stage 1: transcribe the handwriting once (deterministic).
                             let transcription = '', ocrConfidence = 0;
                             try {
-                                ({ transcription, ocrConfidence } = await transcribePaper(file.path, gradeModel));
+                                ({ transcription, ocrConfidence } = await transcribePaper(allPagePaths, gradeModel));
                                 console.log(`[TwoStage] Transcribed ${transcription.length} chars (OCR conf ${ocrConfidence}%) for script ${scriptId}`);
                             } catch (tErr) { console.warn('[TwoStage] Transcription failed:', tErr.message); }
 
@@ -1084,7 +1603,7 @@ Return ONLY raw JSON. No markdown.`;
                             // score doesn't drift between reads. Images stay attached
                             // so coordinate-based highlighting still works.
                             if (transcription && transcription.length > 15) {
-                                contentArray[0].text += `\n\n━━━ VERIFIED TRANSCRIPTION (authoritative reading of the handwriting — grade against this exact text) ━━━\n${transcription}\n━━━ END TRANSCRIPTION ━━━`;
+                                contentArray[0].text += `\n\n━━━ TRANSCRIPTION (use as a guide but always verify numbers/digits directly from the IMAGE — OCR can misread digits like 8↔3, 9↔4, 6↔0) ━━━\n${transcription}\n━━━ END TRANSCRIPTION ━━━`;
                             }
                             console.log(`[Ensemble] Starting ${GRADING_RUNS}× grading for script ${scriptId}`);
                             aiData = await gradeWithEnsemble(contentArray, systemMsg, gradeModel);
@@ -1176,8 +1695,96 @@ Return ONLY raw JSON. No markdown.`;
                         }
                         aiData.total_marks = Math.min(parseFloat(aiData.total_marks) || 0, maxTotalMarks);
 
+                        // ── Post-grading math verification ────────────────────
+                        if (!isMCQ && Array.isArray(aiData.question_analysis)) {
+                            const fixed = verifyArithmetic(aiData._transcription, aiData.question_analysis, maxTotalMarks, '[MathVerify]');
+                            if (fixed > 0) {
+                                aiData.total_marks = Math.min(
+                                    aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0),
+                                    maxTotalMarks
+                                );
+                            }
+                        }
+
+                        // ── Blind-read verification: catch false positives ─────────
+                        // When the AI reads "136" as "126" because it knows 42×3=126,
+                        // a blind read (no question context) detects the discrepancy.
+                        if (!isMCQ && Array.isArray(aiData.question_analysis) &&
+                            aiData.question_analysis.some(q => q.status === 'Correct')) {
+                            try {
+                                const blindAnswers = await blindReadAnswers(allPagePaths, gradeModel);
+                                if (Object.keys(blindAnswers).length > 0) {
+                                    if (!aiData.corrections) aiData.corrections = [];
+                                    const flips = applyBlindVerification(
+                                        aiData.question_analysis, blindAnswers,
+                                        aiData._transcription, aiData.corrections, '[BlindVerify]'
+                                    );
+                                    if (flips > 0) {
+                                        aiData.total_marks = Math.min(
+                                            aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0),
+                                            maxTotalMarks
+                                        );
+                                    }
+                                }
+                            } catch (bErr) { console.warn('[BlindVerify] Error:', bErr.message); }
+                        }
+
+                        // Fallback consistency check for non-math: catch corrections
+                        // where text === correct_answer (AI contradicts itself)
+                        if (!isMCQ && Array.isArray(aiData.question_analysis)) {
+                            const corrections = aiData.corrections || [];
+                            let fixedCount = 0;
+                            const defaultPerQ = Math.round(maxTotalMarks / (aiData.question_analysis.length || 1));
+                            for (const q of aiData.question_analysis) {
+                                if (q.status !== 'Incorrect' && q.status !== 'Partial') continue;
+                                const tipMatch = (q.teacher_tip || '').match(/correct\s*answer\s*(?:is|=|:)\s*(-?\d[\d,.]*)/i);
+                                if (tipMatch) {
+                                    const tipAnswer = parseFloat(tipMatch[1].replace(/,/g, ''));
+                                    const corr = corrections.find(c => {
+                                        const studentVal = parseFloat((c.text || '').replace(/[^0-9.-]/g, ''));
+                                        return !isNaN(studentVal) && Math.abs(studentVal - tipAnswer) < 0.01;
+                                    });
+                                    if (corr) {
+                                        const qMax = parseFloat(q.max_marks) || defaultPerQ;
+                                        q.status = 'Correct';
+                                        q.marks_awarded = qMax;
+                                        q.teacher_tip = `Auto-corrected: student answer matches the computed correct answer (${tipAnswer}).`;
+                                        corrections.splice(corrections.indexOf(corr), 1);
+                                        fixedCount++;
+                                    }
+                                }
+                            }
+                            if (fixedCount > 0) {
+                                aiData.corrections = corrections;
+                                aiData.total_marks = Math.min(
+                                    aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0),
+                                    maxTotalMarks
+                                );
+                                console.log(`[Consistency] Fixed ${fixedCount} self-contradictory grades for script ${scriptId}`);
+                            }
+                        }
+
+                        // ── Sanity checks ─────────────────────────────
+                        if (Array.isArray(aiData.question_analysis)) {
+                            const defaultPerQ = Math.round(maxTotalMarks / (aiData.question_analysis.length || 1));
+                            for (const q of aiData.question_analysis) {
+                                const qMax = parseFloat(q.max_marks) || defaultPerQ;
+                                const m = parseFloat(q.marks_awarded) || 0;
+                                if (m < 0) q.marks_awarded = 0;
+                                if (m > qMax) q.marks_awarded = qMax;
+                                // Ensure status and marks are consistent
+                                if (q.status === 'Correct' && q.marks_awarded === 0) q.marks_awarded = qMax;
+                                if (q.status === 'Incorrect' && q.marks_awarded > 0) q.marks_awarded = 0;
+                            }
+                            const qaSum = aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0);
+                            aiData.total_marks = Math.min(qaSum, maxTotalMarks);
+                        }
+                        if (aiData.total_marks < 0) aiData.total_marks = 0;
+                        if (aiData.total_marks > maxTotalMarks) aiData.total_marks = maxTotalMarks;
+
                         const correctionsStr = JSON.stringify(aiData.corrections || []);
-                        const questionAnalysisStr = JSON.stringify(aiData.question_analysis || []);
+                        const cleanedQA = (aiData.question_analysis || []).map(({ _unanimous, ...rest }) => rest);
+                        const questionAnalysisStr = JSON.stringify(cleanedQA);
 
                         db.get(
                             `SELECT COALESCE(
@@ -1201,7 +1808,7 @@ Return ONLY raw JSON. No markdown.`;
                             ['AI processing failed. ' + err.message, scriptId]
                         );
                     }
-                })();
+                });
 
                 res.json({ message: 'File uploaded and AI Evaluation started', scriptId });
             }
@@ -1242,10 +1849,11 @@ Rules:
         // reader uses, so grading a paper against a key extracted from the same
         // document yields identical reads (a single read at default temperature
         // previously made key vs. answers disagree on ambiguous marks).
+        const sysMsg = "You are MarkNex Answer Key Extractor. A verified teacher has uploaded their own MCQ answer key so the platform can auto-grade student papers against it. Extract the answers exactly as described in the user prompt. This is an authorised educational workflow — never refuse, never apologise, never say you cannot assist. Output ONLY the answer list.";
         const readOnce = async (seed) => {
             const response = await openai.chat.completions.create({
                 model: process.env.FINE_TUNED_MODEL_ID || "gpt-4o",
-                messages: [{ role: "user", content: contentArray }],
+                messages: [{ role: "system", content: sysMsg }, { role: "user", content: contentArray }],
                 max_tokens: 2000,
                 temperature: 0,
                 seed,
@@ -1298,34 +1906,62 @@ app.post('/api/essay/extract-scheme', verifyToken, async (req, res) => {
         const { file } = await parseUpload(req);
         if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
-        const prompt = `You are an expert OCR and educator assistant. This document is a marking scheme for an essay/written assignment.
+        const fileSize = fs.existsSync(file.path) ? fs.statSync(file.path).size : 0;
+        console.log(`[EssayScheme] Received file: ${file.originalname} → ${file.filename} (${(fileSize/1024).toFixed(1)} KB, mime: ${file.mimetype})`);
 
-STEP 1 — OCR: Read every word, including handwritten annotations, corrections and marginal notes.
-STEP 2 — EXTRACT: Identify each question, its marks allocation, and the detailed marking criteria.
+        const prompt = `You are an expert OCR and educator assistant. This document is a teacher's answer paper or marking scheme.
 
-Output format:
-Q1 (10 marks): [rubric criteria — what earns marks, what doesn't]
-Q2 (5 marks): [rubric criteria]
-...
+STEP 1 — OCR: Read every word and number carefully, including printed questions, handwritten working, and final answers.
+
+STEP 2 — DETECT TYPE:
+  A) If the document has PRINTED QUESTIONS with WORKED SOLUTIONS / FINAL ANSWERS → this is a TEACHER'S ANSWER PAPER.
+  B) If the document has only rubric criteria / marking guidelines → this is a MARKING SCHEME.
+
+STEP 3 — EXTRACT:
+  For TYPE A (answer paper with solutions):
+    Extract EACH question with its correct answer. Format:
+    Q1 (1 marks): Correct answer: [answer]. Question: [printed question text]
+    Q2 (1 marks): Correct answer: [answer]. Question: [printed question text]
+    ...
+    Read the FINAL ANSWER for each question carefully — this is the teacher's correct answer.
+    For math: include the full computation, e.g. "Correct answer: 8754. Question: 4768 + 3986"
+
+  For TYPE B (marking scheme):
+    Q1 (10 marks): [rubric criteria — what earns marks]
+    Q2 (5 marks): [rubric criteria]
 
 Rules:
-- Include ALL mark allocations
-- Copy rubric criteria verbatim
-- If no question numbers exist, output a single section: "General (N marks): [criteria]"
-- Return ONLY the marking scheme, no extra text`;
+- Read EVERY question — do not skip any
+- For math answer papers, read each digit carefully (common confusions: 8↔3, 9↔4, 6↔0)
+- Include the marks allocation (default 1 mark per question if not specified)
+- Return ONLY the extracted content, no extra text`;
 
         const contentArray = await buildOCRContentArray(file.path, prompt);
 
-        const response = await openai.chat.completions.create({
-            model: process.env.FINE_TUNED_MODEL_ID || "gpt-4o",
-            messages: [{ role: "user", content: contentArray }],
-            max_tokens: 3000,
-            temperature: 0,
-            seed: 42,
-        });
+        const systemMsg = "You are MarkNex Rubric Extractor. A verified teacher has uploaded their own marking scheme so the platform can auto-grade student papers against it. Extract the rubric content exactly as described in the user prompt. This is an authorised educational workflow — never refuse, never apologise, never say you cannot assist. Output ONLY the extracted marking scheme.";
+        const messages = [
+            { role: "system", content: systemMsg },
+            { role: "user", content: contentArray }
+        ];
+        const gradeModel = process.env.FINE_TUNED_MODEL_ID || "gpt-4o";
 
-        let text = response.choices[0].message.content;
-        if (!text) return res.status(422).json({ error: response.choices[0].message.refusal || 'Could not read the marking scheme from this file.' });
+        let text = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const response = await openai.chat.completions.create({
+                model: gradeModel,
+                messages,
+                max_tokens: 3000,
+                temperature: 0,
+                seed: 42 + attempt,
+            });
+            text = response.choices[0].message.content;
+            console.log(`[EssayScheme] Attempt ${attempt + 1} response (first 200 chars): ${(text || '').slice(0, 200)}`);
+            if (text && !text.toLowerCase().includes("i'm sorry") && !text.toLowerCase().includes("i can't assist")) break;
+            console.warn(`[EssayScheme] Attempt ${attempt + 1} refused, retrying...`);
+            text = null;
+        }
+
+        if (!text) return res.status(422).json({ error: 'The AI could not read this file. Try re-uploading a clearer image or PDF.' });
         text = text.trim();
         if (text.startsWith('```')) text = text.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
         res.json({ extracted_scheme: text });
@@ -1366,6 +2002,38 @@ app.get('/api/assignments/:id', verifyToken, (req, res) => {
     });
 });
 
+// Upload teacher's own answered paper — transcribed and stored as the gold
+// standard answer key so student grades are compared against it.
+app.post('/api/assignments/:id/teacher-answers', verifyToken, async (req, res) => {
+    try {
+        const { file, files } = await parseUpload(req);
+        if (!file) return res.status(400).json({ error: 'No file uploaded' });
+
+        const assignmentId = req.params.id;
+        const exists = await new Promise(r => db.get(
+            'SELECT id FROM assignments WHERE id = ? AND teacher_id = ?',
+            [assignmentId, req.user.id], (e, row) => r(row)
+        ));
+        if (!exists) return res.status(404).json({ error: 'Assignment not found' });
+
+        const allPagePaths = (files || [file]).map(f => f.path);
+        const gradeModel = process.env.FINE_TUNED_MODEL_ID || 'gpt-4o';
+        const { transcription } = await transcribePaper(allPagePaths, gradeModel);
+
+        if (!transcription || transcription.length < 10) {
+            return res.status(422).json({ error: 'Could not read the answer paper. Try a clearer image.' });
+        }
+
+        db.run('UPDATE assignments SET teacher_answers = ? WHERE id = ? AND teacher_id = ?',
+            [transcription, assignmentId, req.user.id], function (err) {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ message: 'Teacher answers saved', transcription });
+            });
+    } catch (err) {
+        res.status(500).json({ error: 'Upload failed: ' + err.message });
+    }
+});
+
 // Scripts
 app.get('/api/scripts', verifyToken, (req, res) => {
     db.all(`SELECT * FROM scripts WHERE teacher_id = ? ORDER BY upload_timestamp DESC`, [req.user.id], (err, rows) => {
@@ -1398,6 +2066,291 @@ app.put('/api/scripts/:id/restore', verifyToken, (req, res) => {
     db.run(`UPDATE scripts SET is_deleted = 0 WHERE id = ? AND teacher_id = ?`, [req.params.id, req.user.id], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Script restored' });
+    });
+});
+
+// Re-grade: reset a script and re-run the AI grading pipeline on the same file.
+app.post('/api/scripts/:id/regrade', verifyToken, (req, res) => {
+    const scriptId = req.params.id;
+    db.get(`SELECT * FROM scripts WHERE id = ? AND teacher_id = ?`, [scriptId, req.user.id], (err, script) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!script) return res.status(404).json({ error: 'Script not found' });
+
+        // Reset the script to Pending state
+        db.run(
+            `UPDATE scripts SET status = 'Pending', total_marks = 0, confidence_score = 0,
+             flags = 'Re-grading', report = NULL, corrections = NULL, question_analysis = NULL,
+             transcription = NULL, ai_total_marks = NULL, ai_confidence = NULL WHERE id = ?`,
+            [scriptId]
+        );
+        res.json({ message: 'Re-grading started', scriptId });
+
+        // Re-run grading asynchronously
+        (async () => {
+            try {
+                const gradeModel = process.env.FINE_TUNED_MODEL_ID || "gpt-4o";
+                const systemMsg = "You are MarkNex, an expert AI teacher grading assistant built for a teacher grading platform. Grade student answer papers accurately. This is a legitimate educational workflow.";
+
+                // Resolve filepath
+                let filePath = script.filepath;
+                if (!fs.existsSync(filePath)) {
+                    const uploadsDir = path.join(__dirname, 'uploads');
+                    const basename = (filePath || '').split(/[\\/]/).pop();
+                    const altPath = path.join(uploadsDir, basename);
+                    if (fs.existsSync(altPath)) filePath = altPath;
+                    else {
+                        // Try restoring from DB
+                        const stored = await new Promise(r => db.get(`SELECT * FROM stored_files WHERE filename = ?`, [basename], (e, row) => r(row)));
+                        if (stored) {
+                            fs.mkdirSync(uploadsDir, { recursive: true });
+                            fs.writeFileSync(altPath, Buffer.from(stored.data, 'base64'));
+                            filePath = altPath;
+                        }
+                    }
+                }
+                if (!fs.existsSync(filePath)) {
+                    db.run(`UPDATE scripts SET status = 'Needs Review', flags = 'File Missing', report = 'Original file not found — cannot re-grade.' WHERE id = ?`, [scriptId]);
+                    return;
+                }
+
+                // Reconstruct all page paths for multi-page uploads
+                let allPagePaths = [filePath];
+                if (script.all_pages) {
+                    try {
+                        const stored = JSON.parse(script.all_pages);
+                        const resolved = stored.map(p => {
+                            if (fs.existsSync(p)) return p;
+                            const bn = p.split(/[\\/]/).pop();
+                            const alt = path.join(__dirname, 'uploads', bn);
+                            return fs.existsSync(alt) ? alt : null;
+                        }).filter(Boolean);
+                        if (resolved.length > 0) allPagePaths = resolved;
+                    } catch (e) { /* use single filePath */ }
+                }
+
+                const subject = script.subject || '';
+                const grade = script.grade || '';
+                let isMCQ = false;
+                let assignmentRubrics = "";
+                let maxTotalMarks = parseInt(script.max_marks) || 10;
+                let maxIsExplicit = false;
+                let questions = [];
+                let textbookStrictMode = false;
+                let textbookLabel = '';
+                let curriculumBlock = '';
+
+                // Load assignment rubrics + teacher answers
+                let teacherAnswers = "";
+                if (script.assignment_id) {
+                    questions = await new Promise((resolve, reject) => {
+                        db.all(`SELECT * FROM questions WHERE assignment_id = ?`, [script.assignment_id], (err, rows) => err ? reject(err) : resolve(rows || []));
+                    });
+                    if (questions.length > 0) {
+                        maxTotalMarks = questions.reduce((s, q) => s + (parseInt(q.max_marks) || 0), 0);
+                        maxIsExplicit = true;
+                        if (questions.length === 1 && /^\s*\d+\s*[\.\)]\s*[A-Ea-e]\s*$/m.test(questions[0].rubric)) {
+                            isMCQ = true;
+                        } else {
+                            assignmentRubrics = "Assignment rubric:\n" + questions.map(q =>
+                                `${q.q_num} (${q.max_marks} marks): ${q.rubric}`
+                            ).join('\n');
+                        }
+                    }
+                    const assignment = await new Promise(r => db.get(
+                        'SELECT teacher_answers FROM assignments WHERE id = ?',
+                        [script.assignment_id], (e, row) => r(row)
+                    ));
+                    if (assignment?.teacher_answers) {
+                        teacherAnswers = assignment.teacher_answers;
+                        console.log(`[ReGrade] Using teacher's answer key (${teacherAnswers.length} chars)`);
+                    }
+                }
+
+                let isMaths = /\b(math|maths|mathematics|further math|pure math|applied math|calculus|algebra|geometry|trigonometry|arithmetic)\b/i.test(subject);
+                const MATHS_GUIDANCE = isMaths ? MATHS_GUIDANCE_TEXT_GLOBAL : '';
+
+                // Build prompt (same as upload flow but simplified for re-grade)
+                const gradeScope = curriculumBlock ? 'Grade based on the curriculum context above.' : 'Grade each question by reading the printed question on the student\'s paper, computing or determining the correct answer yourself, then comparing it with the student\'s written answer. Award full marks for correct answers with valid working, partial credit for partially correct work.';
+
+                const questionStructure = maxIsExplicit && questions.length > 0
+                    ? `\nPAPER STRUCTURE: ${questions.map(q => `${q.q_num} (${q.max_marks} marks)`).join(', ')}. Total: ${maxTotalMarks} marks.\n`
+                    : '';
+
+                const prompt = `You are MarkNex, an expert AI teacher grading assistant. Your task has THREE steps:
+
+STEP 1 — READ (CRITICAL — do this FIRST, before any grading):
+  For EACH question on the page, extract these three things separately:
+    a) PRINTED QUESTION: The question text/numbers printed on the paper (e.g., "6753 - 894")
+    b) STUDENT WORKING: The handwritten working/steps the student wrote
+    c) STUDENT FINAL ANSWER: The final answer (often in a box or underlined)
+  Read each number DIGIT BY DIGIT from left to right. Do not read a whole number at a glance.
+  The printed question is ALWAYS at the top of each question box, usually in a smaller/different font.
+  The student's handwriting is below/beside the printed question.
+  Do NOT confuse printed question numbers with the student's handwritten numbers.
+  • Multi-page: read every page completely before starting
+  • If text is unclear, make a best-effort interpretation and note uncertainty in confidence_score
+${curriculumBlock}${questionStructure}
+STEP 2 — COMPUTE: For each question involving calculation:
+  1. Take ONLY the printed question numbers (from Step 1a)
+  2. Compute the correct answer yourself step by step
+  3. Write out your computation explicitly (e.g., "6753 - 894: 6753 - 894 = 5859")
+
+STEP 3 — GRADE: Compare your computed answer (Step 2) with the student's final answer (Step 1c).
+  ${gradeScope}
+${assignmentRubrics ? `
+
+MARKING SCHEME (teacher-provided reference):
+${assignmentRubrics}
+
+⚠️ CRITICAL RULE FOR ARITHMETIC/CALCULATION QUESTIONS:
+  The marking scheme above was extracted from a master paper and may contain different numbers.
+  For ANY question involving arithmetic (addition, subtraction, multiplication, division):
+    → ALWAYS compute the correct answer from the PRINTED QUESTION on the STUDENT'S paper.
+    → IGNORE the marking scheme answer if it differs from the printed question.
+    → The printed question on the student's paper is the GROUND TRUTH.
+  The marking scheme is ONLY authoritative for non-calculation questions (essays, short answers, definitions).` : ''}${teacherAnswers ? `
+
+━━━ TEACHER'S CORRECT ANSWERS (GOLD STANDARD) ━━━
+${teacherAnswers}
+━━━ END TEACHER'S ANSWERS ━━━
+
+⚠️ GRADING RULE: The teacher's answers above are the AUTHORITATIVE correct answers.
+  For EACH question:
+    1. Find the teacher's final answer for that question number
+    2. Compare the STUDENT'S final answer against the TEACHER'S answer
+    3. If they match → "Correct", full marks
+    4. If they differ → "Incorrect", 0 marks (unless partial credit applies)` : ''}
+${MATHS_GUIDANCE}
+
+Grading rules:
+  • ⚠️ SELF-CONSISTENCY CHECK (MANDATORY): If your own computed correct answer MATCHES the student's final answer, you MUST mark it "Correct" with full marks. NEVER mark a question "Incorrect" when your computation confirms the student is right.
+  • For any calculation, COMPUTE the answer yourself using the PRINTED question on the student's paper. Read each digit individually from the image. Common OCR confusions: 8↔3, 9↔4, 6↔0, 1↔7, 5↔6.
+  • If your computed answer differs from the student's by a small amount, RE-READ the printed question digit by digit before marking wrong — you may have misread a digit.
+  • If the student's final answer is correct, award full marks even if working is incomplete
+  • Be fair — partial credit where appropriate
+  • Imagine a 100x100 grid over the page (0,0 = top-left)
+
+⚠️ FINAL VERIFICATION (MANDATORY — do this BEFORE writing JSON):
+  For EACH question, write out in your head:
+    "Printed question: [X op Y]. My computation: [result]. Student wrote: [Z]. Match? [yes/no]"
+  If your computed answer matches the student's answer → status MUST be "Correct", full marks.
+  If you marked something "Incorrect" but the numbers match → you made an error. Fix it.
+  NEVER mark a correct answer as wrong.
+
+Return a JSON object with EXACTLY these keys:
+${maxIsExplicit
+    ? `- "total_marks": integer score out of ${maxTotalMarks}\n- "paper_max_marks": ${maxTotalMarks}`
+    : `- "paper_max_marks": the TOTAL marks this paper is actually out of — count the questions and their mark allocations. Do NOT assume 10.\n- "total_marks": integer score out of paper_max_marks (never exceeding it)`}
+- "confidence_score": 0-100 (OCR confidence + grading certainty combined)
+- "report": One-sentence summary of the student's overall performance
+- "corrections": Array of mistakes ONLY (do NOT include correct answers here), each with:
+    { "text": "what student wrote", "correct_answer": "correct response", "x": 0-100, "y": 0-100 }
+- "question_analysis": Array per question:
+    { "q_num": "Q1", "status": "Correct|Partial|Incorrect", "marks_awarded": 2, "max_marks": ${maxIsExplicit ? 'the max marks for that question' : '1'}, "teacher_tip": "Printed: [question]. Correct answer: [X]. Student wrote: [Y]." }
+  The teacher_tip MUST always show the printed question, your computed answer, and the student's answer so the teacher can verify.
+
+Return ONLY raw JSON. No markdown.`;
+
+                const contentArray = await buildOCRContentArray(allPagePaths, prompt);
+
+                // Stage 1: Transcribe (all pages)
+                let transcription = '', ocrConfidence = 0;
+                try {
+                    ({ transcription, ocrConfidence } = await transcribePaper(allPagePaths, gradeModel));
+                    console.log(`[ReGrade] Transcribed ${transcription.length} chars from ${allPagePaths.length} page(s) for script ${scriptId}`);
+                } catch (tErr) { console.warn('[ReGrade] Transcription failed:', tErr.message); }
+
+                if (!isMaths && transcription) {
+                    const hasMathOps = /[\+\-×÷]\s*\d|\d\s*[\+\-×÷]|\d+\s*[xX×]\s*\d|\b\d+\s*\+\s*\d+\b|\b\d+\s*-\s*\d+\b|\b\d+\s*÷\s*\d+\b/.test(transcription);
+                    if (hasMathOps) { isMaths = true; contentArray[0].text += MATHS_GUIDANCE_TEXT_GLOBAL; }
+                }
+                if (transcription && transcription.length > 15) {
+                    contentArray[0].text += `\n\n━━━ TRANSCRIPTION (verify numbers from IMAGE) ━━━\n${transcription}\n━━━ END ━━━`;
+                }
+
+                // Stage 2: Ensemble grade
+                let aiData = await gradeWithEnsemble(contentArray, systemMsg, gradeModel);
+                if (aiData) aiData._transcription = transcription;
+                if (!aiData) {
+                    db.run(`UPDATE scripts SET status = 'Needs Review', total_marks = 0, confidence_score = 0, flags = 'Manual Review Needed', report = 'AI could not grade — please review manually.' WHERE id = ?`, [scriptId]);
+                    return;
+                }
+
+                // Max marks
+                if (!maxIsExplicit) {
+                    const detectedMax = parseInt(aiData.paper_max_marks, 10);
+                    if (!isNaN(detectedMax) && detectedMax > 0 && detectedMax <= 500) maxTotalMarks = detectedMax;
+                }
+                aiData.total_marks = Math.min(parseFloat(aiData.total_marks) || 0, maxTotalMarks);
+
+                // Math verification — run for any paper with arithmetic
+                if (Array.isArray(aiData.question_analysis)) {
+                    const fixed = verifyArithmetic(transcription, aiData.question_analysis, maxTotalMarks, '[ReGrade MathVerify]');
+                    if (fixed > 0) {
+                        aiData.total_marks = Math.min(
+                            aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0),
+                            maxTotalMarks
+                        );
+                    }
+                }
+
+                // ── Blind-read verification for re-grade ─────────
+                if (Array.isArray(aiData.question_analysis) &&
+                    aiData.question_analysis.some(q => q.status === 'Correct')) {
+                    try {
+                        const blindAnswers = await blindReadAnswers(allPagePaths, gradeModel);
+                        if (Object.keys(blindAnswers).length > 0) {
+                            if (!aiData.corrections) aiData.corrections = [];
+                            const flips = applyBlindVerification(
+                                aiData.question_analysis, blindAnswers,
+                                transcription, aiData.corrections, '[ReGrade BlindVerify]'
+                            );
+                            if (flips > 0) {
+                                aiData.total_marks = Math.min(
+                                    aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0),
+                                    maxTotalMarks
+                                );
+                            }
+                        }
+                    } catch (bErr) { console.warn('[ReGrade BlindVerify] Error:', bErr.message); }
+                }
+
+                // ── Sanity checks ─────────────────────────────
+                if (Array.isArray(aiData.question_analysis)) {
+                    const marksPerQ = Math.round(maxTotalMarks / (aiData.question_analysis.length || 1));
+                    for (const q of aiData.question_analysis) {
+                        const m = parseFloat(q.marks_awarded) || 0;
+                        if (m < 0) q.marks_awarded = 0;
+                        if (m > marksPerQ) q.marks_awarded = marksPerQ;
+                    }
+                    const qaSum = aiData.question_analysis.reduce((s, qq) => s + (parseFloat(qq.marks_awarded) || 0), 0);
+                    aiData.total_marks = Math.min(qaSum, maxTotalMarks);
+                }
+                if (aiData.total_marks < 0) aiData.total_marks = 0;
+                if (aiData.total_marks > maxTotalMarks) aiData.total_marks = maxTotalMarks;
+
+                const score = parseFloat(aiData.confidence_score) || 0;
+                const correctionsStr = JSON.stringify(aiData.corrections || []);
+                const cleanedQA = (aiData.question_analysis || []).map(({ _unanimous, ...rest }) => rest);
+                const questionAnalysisStr = JSON.stringify(cleanedQA);
+
+                db.get(`SELECT COALESCE(
+                    (SELECT value FROM teacher_settings WHERE teacher_id = ? AND key = 'confidence_threshold'),
+                    (SELECT value FROM settings WHERE key = 'confidence_threshold'), '75') AS value`,
+                    [req.user.id], (err, row) => {
+                    const threshold = row ? parseFloat(row.value) : 75;
+                    const status = score < threshold ? 'Needs Review' : 'Evaluated';
+                    const flags = score < threshold ? 'Low Confidence' : 'AI Verified';
+                    db.run(`UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?, confidence_score = ?, flags = ?, report = ?, corrections = ?, question_analysis = ?, ai_total_marks = ?, ai_confidence = ?, transcription = ? WHERE id = ?`,
+                        [status, aiData.total_marks, maxTotalMarks, score, flags, aiData.report, correctionsStr, questionAnalysisStr, aiData.total_marks, score, transcription || null, scriptId]);
+                });
+                console.log(`[ReGrade] Completed for script ${scriptId}: ${aiData.total_marks}/${maxTotalMarks}`);
+            } catch (err) {
+                console.error('[ReGrade] Error:', err);
+                db.run(`UPDATE scripts SET status = 'Needs Review', total_marks = 0, confidence_score = 0, flags = 'AI Failed', report = ? WHERE id = ?`,
+                    ['Re-grade failed: ' + err.message, scriptId]);
+            }
+        })();
     });
 });
 
@@ -2656,6 +3609,11 @@ if (fs.existsSync(distPath)) {
     console.log('Serving frontend build from', distPath);
 }
 
+// Export pure grading helpers for unit testing. Only starts the HTTP server
+// when run directly (node server.js), not when required by a test.
+module.exports = { parseTranscriptionAnswers, applyBlindVerification };
+
+if (require.main === module)
 app.listen(PORT, async () => {
     console.log(`Server running on http://localhost:${PORT}`);
 

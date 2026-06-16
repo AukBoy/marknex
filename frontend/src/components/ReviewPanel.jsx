@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { FileText, Save, ArrowLeft, AlertTriangle, PenTool, Eraser, Download, Sparkles, Loader } from 'lucide-react';
+import { FileText, Save, ArrowLeft, AlertTriangle, PenTool, Eraser, Download, Sparkles, Loader, RefreshCcw } from 'lucide-react';
 import api, { fileUrl } from '../api';
+import { showToast } from '../hooks/useToast';
 
 function ReviewPanel() {
     const { id } = useParams();
@@ -38,6 +39,36 @@ function ReviewPanel() {
     const [isErasing, setIsErasing] = useState(false);
     const [hasCorrections, setHasCorrections] = useState(false);
     const [generatingFeedback, setGeneratingFeedback] = useState(false);
+    const [regrading, setRegrading] = useState(false);
+
+    const handleRegrade = async () => {
+        if (!window.confirm('Re-grade this paper? The AI will re-read and re-evaluate from scratch.')) return;
+        setRegrading(true);
+        try {
+            await api.post(`/scripts/${id}/regrade`);
+            showToast.loading('Re-grading started — refreshing in a few seconds...');
+            const poll = setInterval(async () => {
+                try {
+                    const res = await api.get('/scripts');
+                    const s = res.data.find(x => x.id === parseInt(id));
+                    if (s && s.status !== 'Pending') {
+                        clearInterval(poll);
+                        setScript(s);
+                        setNewMarks(s.total_marks || '');
+                        setReport(s.report || '');
+                        try { setAiCorrections(JSON.parse(s.corrections || '[]')); } catch {}
+                        try { setQuestionAnalysis(JSON.parse(s.question_analysis || '[]')); } catch {}
+                        setRegrading(false);
+                        showToast.success(`Re-graded: ${s.total_marks}/${s.max_marks}`);
+                    }
+                } catch {}
+            }, 3000);
+            setTimeout(() => { clearInterval(poll); setRegrading(false); }, 120000);
+        } catch (err) {
+            showToast.error('Re-grade failed: ' + (err.response?.data?.error || err.message));
+            setRegrading(false);
+        }
+    };
 
     useEffect(() => {
         const fetchScript = async () => {
@@ -175,18 +206,32 @@ function ReviewPanel() {
                     <ArrowLeft size={18} /> Back to Dashboard
                 </button>
 
-                <button
-                    onClick={generateFeedbackPDF}
-                    disabled={generatingFeedback}
-                    className="btn btn-secondary"
-                    style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-                    title="Generate AI feedback PDF for this student">
-                    {generatingFeedback ? (
-                        <><Loader size={16} style={{ animation: 'spin 0.8s linear infinite' }} /> Generating...</>
-                    ) : (
-                        <><Download size={16} /> Generate Feedback PDF</>
-                    )}
-                </button>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+                    <button
+                        onClick={handleRegrade}
+                        disabled={regrading}
+                        className="btn"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--warning)', color: 'white', border: 'none' }}
+                        title="Re-run AI grading from scratch">
+                        {regrading ? (
+                            <><Loader size={16} style={{ animation: 'spin 0.8s linear infinite' }} /> Re-grading...</>
+                        ) : (
+                            <><RefreshCcw size={16} /> Re-grade</>
+                        )}
+                    </button>
+                    <button
+                        onClick={generateFeedbackPDF}
+                        disabled={generatingFeedback}
+                        className="btn btn-secondary"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                        title="Generate AI feedback PDF for this student">
+                        {generatingFeedback ? (
+                            <><Loader size={16} style={{ animation: 'spin 0.8s linear infinite' }} /> Generating...</>
+                        ) : (
+                            <><Download size={16} /> Generate Feedback PDF</>
+                        )}
+                    </button>
+                </div>
             </div>
 
             <div className="card">

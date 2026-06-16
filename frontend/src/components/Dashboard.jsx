@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { UploadCloud, CheckCircle, AlertTriangle, FileText, Trash2, RefreshCcw, ArrowUpDown, Download, BookOpen, Lock } from 'lucide-react';
-import { toImageIfPdf } from '../utils/pdf';
+import { toImagesIfPdf } from '../utils/pdf';
 import api from '../api';
 import { useOptions } from '../hooks/useOptions';
 import SearchBar from './SearchBar';
@@ -131,7 +131,7 @@ function Dashboard() {
             for (let i = 0; i < files.length; i++) {
                 const original = files[i];
                 const sId = studentId ? studentId : original.name.replace(/\.[^/.]+$/, ""); // strip extension
-                const f = await toImageIfPdf(original); // PDFs → image so AI sees real layout
+                const pageImages = await toImagesIfPdf(original);
 
                 const formData = new FormData();
                 formData.append('student_id', sId);
@@ -141,7 +141,7 @@ function Dashboard() {
                 if (assignmentId) formData.append('assignment_id', assignmentId);
                 if (contextId)    formData.append('context_id', contextId);
                 formData.append('textbook_strict', textbookStrict ? 'true' : 'false');
-                formData.append('script', f);
+                for (const page of pageImages) formData.append('script', page);
 
                 const resp = await api.post('/scripts/upload', formData);
                 if (resp.data?.duplicate) {
@@ -182,6 +182,17 @@ function Dashboard() {
             fetchScripts();
         } catch (err) {
             showToast.error('Failed to restore script');
+        }
+    };
+
+    const handleRegrade = async (id) => {
+        if (!window.confirm('Re-grade this paper from scratch?')) return;
+        try {
+            await api.post(`/scripts/${id}/regrade`);
+            showToast.loading('Re-grading started...');
+            fetchScripts();
+        } catch (err) {
+            showToast.error('Re-grade failed: ' + (err.response?.data?.error || err.message));
         }
     };
 
@@ -583,6 +594,9 @@ function Dashboard() {
                                                         <CheckCircle size={18} /> View Report
                                                     </Link>
                                                 )}
+                                                <button onClick={() => handleRegrade(script.id)} className="btn btn-secondary" style={{ padding: '0 0.8rem' }} title="Re-grade">
+                                                    <RefreshCcw size={18} />
+                                                </button>
                                                 <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0 0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
                                                     <Trash2 size={18} />
                                                 </button>

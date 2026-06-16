@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2, Layers, BookOpen, CheckCircle, FileText, Edit3 } from 'lucide-react';
-import { toImageIfPdf } from '../utils/pdf';
+import { toImageIfPdf, toImagesIfPdf } from '../utils/pdf';
 import api from '../api';
 import { useOptions } from '../hooks/useOptions';
 
@@ -31,6 +31,12 @@ function EssayGrader() {
     const [assignmentId, setAssignmentId] = useState(null);
     const [confirmedQuestions, setConfirmedQuestions] = useState([]);
     const [totalMax, setTotalMax] = useState(0);
+
+    // Teacher answer key
+    const [teacherAnswerFile, setTeacherAnswerFile] = useState(null);
+    const [uploadingTeacherAnswers, setUploadingTeacherAnswers] = useState(false);
+    const [teacherAnswersUploaded, setTeacherAnswersUploaded] = useState(false);
+    const [teacherAnswersPreview, setTeacherAnswersPreview] = useState('');
 
     // Step 3 — Bulk upload
     const [studentFiles, setStudentFiles] = useState(null);
@@ -91,6 +97,10 @@ function EssayGrader() {
             setConfirmedQuestions(a.questions || []);
             setTotalMax(a.total_max_marks || 0);
             setAssignmentTitle(a.title);
+            if (a.teacher_answers) {
+                setTeacherAnswersUploaded(true);
+                setTeacherAnswersPreview(a.teacher_answers);
+            }
             setStep(2);
         } catch (err) {
             alert('Failed to load assignment.');
@@ -102,8 +112,9 @@ function EssayGrader() {
         if (!markingSchemeFile) return alert('Please select a marking scheme PDF.');
         setExtractingScheme(true);
         try {
+            const converted = await toImageIfPdf(markingSchemeFile);
             const formData = new FormData();
-            formData.append('marking_scheme', markingSchemeFile);
+            formData.append('marking_scheme', converted);
             
             const res = await api.post('/essay/extract-scheme', formData);
             setExtractedScheme(res.data.extracted_scheme);
@@ -144,6 +155,24 @@ function EssayGrader() {
         setMode('new'); // Switch to manual mode so user can review/edit
     };
 
+    // ── Teacher answer key upload ────────────────────────────────────
+    const handleTeacherAnswerUpload = async () => {
+        if (!teacherAnswerFile || !assignmentId) return;
+        setUploadingTeacherAnswers(true);
+        try {
+            const pageImages = await toImagesIfPdf(teacherAnswerFile);
+            const formData = new FormData();
+            for (const page of pageImages) formData.append('script', page);
+            const res = await api.post(`/assignments/${assignmentId}/teacher-answers`, formData);
+            setTeacherAnswersUploaded(true);
+            setTeacherAnswersPreview(res.data.transcription || '');
+        } catch (err) {
+            alert('Failed to upload teacher answers: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setUploadingTeacherAnswers(false);
+        }
+    };
+
     // ── Step 3 ──────────────────────────────────────────────────────
     const handleBulkUpload = async (e) => {
         e.preventDefault();
@@ -159,14 +188,14 @@ function EssayGrader() {
             const original = studentFiles[i];
             const sId = original.name.replace(/\.[^/.]+$/, '');
             try {
-                const f = await toImageIfPdf(original); // PDFs → image so AI sees real layout
+                const pageImages = await toImagesIfPdf(original);
                 const formData = new FormData();
                 formData.append('student_id', sId);
                 formData.append('grade', grade);
                 formData.append('exam', exam);
                 formData.append('subject', subject);
                 formData.append('assignment_id', assignmentId);
-                formData.append('script', f);
+                for (const page of pageImages) formData.append('script', page);
                 await api.post('/scripts/upload', formData);
                 results.push({ name: original.name, status: 'queued' });
             } catch (err) {
@@ -473,6 +502,51 @@ function EssayGrader() {
                                 </div>
                             ))}
                         </div>
+                    </div>
+
+                    {/* Teacher Answer Key Upload */}
+                    <div style={{
+                        background: teacherAnswersUploaded ? '#f0fdf4' : '#fffbeb',
+                        borderRadius: '12px',
+                        border: `1px solid ${teacherAnswersUploaded ? '#86efac' : '#fde68a'}`,
+                        padding: '1.5rem',
+                        marginBottom: '1.5rem'
+                    }}>
+                        <h4 style={{ margin: '0 0 0.5rem', color: teacherAnswersUploaded ? '#16a34a' : '#d97706' }}>
+                            {teacherAnswersUploaded ? '✓ Teacher Answer Key Uploaded' : 'Upload Teacher\'s Answer Paper (Recommended)'}
+                        </h4>
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: '0 0 1rem' }}>
+                            Upload your own answered paper so the AI grades by comparing against your correct answers.
+                        </p>
+
+                        {!teacherAnswersUploaded ? (
+                            <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <input
+                                    type="file"
+                                    accept=".pdf,.jpg,.jpeg,.png"
+                                    onChange={e => setTeacherAnswerFile(e.target.files[0] || null)}
+                                    style={{ flex: 1, minWidth: '200px' }}
+                                />
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    disabled={!teacherAnswerFile || uploadingTeacherAnswers}
+                                    onClick={handleTeacherAnswerUpload}
+                                    style={{ whiteSpace: 'nowrap' }}
+                                >
+                                    {uploadingTeacherAnswers ? 'Reading answers...' : 'Upload & Read'}
+                                </button>
+                            </div>
+                        ) : (
+                            <pre style={{
+                                background: 'white', padding: '1rem', borderRadius: '8px',
+                                border: '1px solid var(--border)', fontSize: '0.8rem',
+                                maxHeight: '200px', overflow: 'auto', whiteSpace: 'pre-wrap',
+                                margin: 0
+                            }}>
+                                {teacherAnswersPreview}
+                            </pre>
+                        )}
                     </div>
 
                     <div style={{ display: 'flex', gap: '1rem' }}>

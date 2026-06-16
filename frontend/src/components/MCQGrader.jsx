@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UploadCloud, CheckCircle, ArrowLeft, FileText, CheckSquare, Layers } from 'lucide-react';
-import { toImageIfPdf } from '../utils/pdf';
+import { toImageIfPdf, toImagesIfPdf } from '../utils/pdf';
 import api from '../api';
 import { useOptions } from '../hooks/useOptions';
 
@@ -31,10 +31,11 @@ function MCQGrader() {
         if (!masterFile) return alert('Please select a master answer sheet.');
         setExtracting(true);
         try {
+            const converted = await toImageIfPdf(masterFile);
             const formData = new FormData();
-            formData.append('master_sheet', masterFile);
-            
-            console.log('Uploading file:', masterFile.name, 'Size:', masterFile.size);
+            formData.append('master_sheet', converted);
+
+            console.log('Uploading file:', converted.name, 'Size:', converted.size);
             const res = await api.post('/mcq/extract-key', formData);
             console.log('Response:', res.data);
             setExtractedKey(res.data.extracted_key);
@@ -83,7 +84,7 @@ function MCQGrader() {
             for (let i = 0; i < studentFiles.length; i++) {
                 const original = studentFiles[i];
                 const sId = original.name.replace(/\.[^/.]+$/, ""); // Use filename as student ID
-                const f = await toImageIfPdf(original); // PDFs → image so AI sees real layout
+                const pageImages = await toImagesIfPdf(original);
 
                 const formData = new FormData();
                 formData.append('student_id', sId);
@@ -91,7 +92,7 @@ function MCQGrader() {
                 formData.append('exam', exam);
                 formData.append('subject', subject);
                 formData.append('assignment_id', assignmentId);
-                formData.append('script', f);
+                for (const page of pageImages) formData.append('script', page);
 
                 await api.post('/scripts/upload', formData);
                 setUploadProgress(Math.round(((i + 1) / studentFiles.length) * 100));
