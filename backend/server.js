@@ -1127,7 +1127,7 @@ app.post('/api/auth/reset-password', authRateLimit, async (req, res) => {
 
 // Health check — reports which database engine is live (verifies Postgres).
 app.get('/api/health', (req, res) => {
-    res.json({ ok: true, db: process.env.DATABASE_URL ? 'postgres' : 'sqlite', version: 'v2-math-fix' });
+    res.json({ ok: true, db: process.env.DATABASE_URL ? 'postgres' : 'sqlite', version: 'v3-blind-read' });
 });
 
 // 2. Login. The `portal` field ('teacher' | 'student') tells us which account
