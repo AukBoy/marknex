@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { UploadCloud, CheckCircle, AlertTriangle, FileText, Trash2, RefreshCcw, ArrowUpDown, Download, BookOpen, Lock } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { UploadCloud, CheckCircle, AlertTriangle, FileText, Trash2, RefreshCcw, ArrowUpDown, Download, BookOpen, Lock, ChevronDown, ChevronRight, LayoutGrid, List, Eye } from 'lucide-react';
 import { toImagesIfPdf } from '../utils/pdf';
 import api from '../api';
 import { useOptions } from '../hooks/useOptions';
@@ -27,6 +27,9 @@ function Dashboard() {
     const [sortBy, setSortBy] = useState('date');
     const [filterStatus, setFilterStatus] = useState('All');
     const [minConfidence, setMinConfidence] = useState(0);
+    const [displayMode, setDisplayMode] = useState('table');   // 'table' | 'cards'
+    const [collapsedGroups, setCollapsedGroups] = useState({});
+    const navigate = useNavigate();
 
     // Textbook context selector
     const [allContexts, setAllContexts]     = useState([]);   // all saved textbooks
@@ -224,8 +227,181 @@ function Dashboard() {
         return 'badge-success';
     };
 
+    // ── Presentation helpers (table + grouping) ──────────────────────────────
+    const pctOf = (s) => (s.max_marks ? Math.round((s.total_marks / s.max_marks) * 100) : null);
+    const scoreColor = (pct) =>
+        pct == null ? 'var(--text-muted)' : pct >= 75 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--danger)';
+    const toggleGroup = (key) => setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+    const openReport = (s) => {
+        if (s.status === 'Pending') return;
+        navigate(s.status === 'Needs Review' ? `/review/${s.id}` : `/report/${s.id}`);
+    };
+
+    // At-a-glance summary over the currently filtered set.
+    const gradedWithMarks = displayedScripts.filter(s => s.status !== 'Pending' && s.max_marks);
+    const avgPct = gradedWithMarks.length
+        ? Math.round(gradedWithMarks.reduce((sum, s) => sum + (s.total_marks / s.max_marks) * 100, 0) / gradedWithMarks.length)
+        : null;
+    const stats = {
+        total: displayedScripts.length,
+        needsReview: displayedScripts.filter(s => s.status === 'Needs Review').length,
+        pending: displayedScripts.filter(s => s.status === 'Pending').length,
+    };
+    stats.evaluated = stats.total - stats.needsReview - stats.pending;
+
+    // Group by "Exam — Subject (Grade)", preserving the current sort order.
+    const groupOrder = [];
+    const groupMap = {};
+    for (const s of displayedScripts) {
+        const key = `${s.exam || 'Unassigned'} — ${s.subject || 'No Subject'} (${s.grade || 'No Grade'})`;
+        if (!groupMap[key]) { groupMap[key] = []; groupOrder.push(key); }
+        groupMap[key].push(s);
+    }
+    const groups = groupOrder.map(key => {
+        const items = groupMap[key];
+        const wm = items.filter(s => s.status !== 'Pending' && s.max_marks);
+        const avg = wm.length
+            ? Math.round(wm.reduce((sum, s) => sum + (s.total_marks / s.max_marks) * 100, 0) / wm.length)
+            : null;
+        return { key, items, avg };
+    });
+
+    // Existing card layout, extracted so the Cards view still works unchanged.
+    const renderCard = (script) => (
+        <div key={script.id} className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                <div>
+                    <h4 style={{ margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        Student: {script.student_id}
+                    </h4>
+                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'var(--primary-light)', color: 'var(--primary)', borderRadius: '12px', fontWeight: 600 }}>{script.grade || 'No Grade'}</span>
+                        <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'var(--surface)', color: 'var(--text-main)', borderRadius: '12px', fontWeight: 600, border: '1px solid var(--border)' }}>{script.subject || 'No Subject'}</span>
+                        <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'var(--border)', color: 'var(--text-main)', borderRadius: '12px', fontWeight: 600 }}>{script.exam || 'No Exam'}</span>
+                    </div>
+                    <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', margin: 0 }}>{script.filename}</p>
+                </div>
+                <span className={`badge ${getBadgeClass(script.status)}`}>
+                    {script.status}
+                </span>
+            </div>
+
+            <div style={{ marginTop: 'auto', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+                {script.status === 'Pending' ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <p style={{ margin: 0, color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 500 }}>
+                            <AlertTriangle size={18} /> AI is evaluating...
+                        </p>
+                        {viewMode === 'active' && (
+                            <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0.3rem 0.6rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
+                                <Trash2 size={16} />
+                            </button>
+                        )}
+                    </div>
+                ) : (
+                    <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                            <span style={{ color: 'var(--text-muted)' }}>Score:</span>
+                            <strong style={{ fontSize: '1.2rem', color: 'var(--primary)' }}>{script.total_marks}/{script.max_marks || 10}</strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+                            <span style={{ color: 'var(--text-muted)' }}>Confidence:</span>
+                            <strong style={{ color: script.confidence_score < 75 ? 'var(--danger)' : 'var(--success)' }}>
+                                {script.confidence_score}%
+                            </strong>
+                        </div>
+
+                        {viewMode === 'deleted' ? (
+                            <button onClick={() => handleRestore(script.id)} className="btn btn-success" style={{ width: '100%', background: 'var(--success)', color: 'white', border: 'none' }}>
+                                <RefreshCcw size={18} /> Restore Script
+                            </button>
+                        ) : (
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                {script.status === 'Needs Review' ? (
+                                    <Link to={`/review/${script.id}`} className="btn btn-secondary" style={{ flex: 1, borderColor: 'var(--danger)', color: 'var(--danger)' }}>
+                                        <AlertTriangle size={18} /> Review Required
+                                    </Link>
+                                ) : (
+                                    <Link to={`/report/${script.id}`} className="btn btn-primary" style={{ flex: 1 }}>
+                                        <CheckCircle size={18} /> View Report
+                                    </Link>
+                                )}
+                                <button onClick={() => handleRegrade(script.id)} className="btn btn-secondary" style={{ padding: '0 0.8rem' }} title="Re-grade">
+                                    <RefreshCcw size={18} />
+                                </button>
+                                <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0 0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
+                                    <Trash2 size={18} />
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+
+    // Compact table row — the default, scannable presentation.
+    const cellStyle = { padding: '0.6rem 0.75rem', verticalAlign: 'middle' };
+    const renderRow = (script) => {
+        const pct = pctOf(script);
+        const isPending = script.status === 'Pending';
+        return (
+            <tr
+                key={script.id}
+                className="mn-row"
+                onClick={() => openReport(script)}
+                style={{ borderTop: '1px solid var(--border)', cursor: isPending ? 'default' : 'pointer', transition: 'background 0.15s' }}
+            >
+                <td style={{ ...cellStyle, fontWeight: 600, color: 'var(--text-main)' }}>{script.student_id}</td>
+                <td style={cellStyle}>
+                    {isPending ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
+                        <strong style={{ color: scoreColor(pct) }}>{script.total_marks}/{script.max_marks || 10}</strong>
+                    )}
+                </td>
+                <td style={cellStyle}>
+                    {isPending ? (
+                        <span style={{ color: 'var(--warning)', display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem' }}>
+                            <AlertTriangle size={14} /> evaluating…
+                        </span>
+                    ) : (
+                        <span style={{ color: script.confidence_score < 75 ? 'var(--danger)' : 'var(--success)', fontWeight: 600 }}>{script.confidence_score}%</span>
+                    )}
+                </td>
+                <td style={cellStyle}><span className={`badge ${getBadgeClass(script.status)}`}>{script.status}</span></td>
+                <td style={{ ...cellStyle, color: 'var(--text-muted)', fontSize: '0.78rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script.filename}>{script.filename}</td>
+                <td style={{ ...cellStyle, textAlign: 'right', whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+                    {viewMode === 'deleted' ? (
+                        <button onClick={() => handleRestore(script.id)} className="btn btn-secondary" style={{ padding: '0.3rem 0.7rem', color: 'var(--success)', borderColor: 'var(--success)', fontSize: '0.8rem' }} title="Restore">
+                            <RefreshCcw size={15} /> Restore
+                        </button>
+                    ) : isPending ? (
+                        <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0.3rem 0.55rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
+                            <Trash2 size={15} />
+                        </button>
+                    ) : (
+                        <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
+                            <button onClick={() => openReport(script)} className="btn btn-secondary" style={{ padding: '0.3rem 0.55rem', color: script.status === 'Needs Review' ? 'var(--danger)' : 'var(--primary)', borderColor: script.status === 'Needs Review' ? 'var(--danger)' : 'var(--primary)' }} title={script.status === 'Needs Review' ? 'Review required' : 'View report'}>
+                                {script.status === 'Needs Review' ? <AlertTriangle size={15} /> : <Eye size={15} />}
+                            </button>
+                            <button onClick={() => handleRegrade(script.id)} className="btn btn-secondary" style={{ padding: '0.3rem 0.55rem' }} title="Re-grade">
+                                <RefreshCcw size={15} />
+                            </button>
+                            <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0.3rem 0.55rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
+                                <Trash2 size={15} />
+                            </button>
+                        </div>
+                    )}
+                </td>
+            </tr>
+        );
+    };
+
     return (
         <div style={{ animation: 'fadeIn 0.5s ease' }}>
+            <style>{`
+                .mn-row:hover { background: var(--primary-light); }
+                .mn-group-head:hover { filter: brightness(0.97); }
+            `}</style>
             <div className="dashboard-header">
                 <div>
                     <h2 style={{ margin: 0, fontSize: '2rem' }}>Answer Scripts Dashboard</h2>
@@ -504,20 +680,49 @@ function Dashboard() {
                             Recycle Bin ({scripts.filter(s => s.is_deleted).length})
                         </button>
                     </div>
-                    {displayedScripts.length > 0 && (
-                        <button
-                            onClick={() => {
-                                exportGradesCSV(displayedScripts, `grades_${new Date().toISOString().split('T')[0]}.csv`);
-                                showToast.success(`Exported ${displayedScripts.length} grades to CSV`);
-                            }}
-                            className="btn btn-secondary"
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.85rem' }}
-                        >
-                            <Download size={16} /> Export CSV
-                        </button>
-                    )}
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', gap: '0.25rem', background: 'rgba(79, 70, 229, 0.08)', padding: '0.35rem', borderRadius: '10px' }}>
+                            <button onClick={() => setDisplayMode('table')} title="Table view"
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.9rem', fontSize: '0.82rem', fontWeight: 600, background: displayMode === 'table' ? 'var(--primary)' : 'transparent', color: displayMode === 'table' ? 'white' : 'var(--text-muted)', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                                <List size={15} /> Table
+                            </button>
+                            <button onClick={() => setDisplayMode('cards')} title="Card view"
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.9rem', fontSize: '0.82rem', fontWeight: 600, background: displayMode === 'cards' ? 'var(--primary)' : 'transparent', color: displayMode === 'cards' ? 'white' : 'var(--text-muted)', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                                <LayoutGrid size={15} /> Cards
+                            </button>
+                        </div>
+                        {displayedScripts.length > 0 && (
+                            <button
+                                onClick={() => {
+                                    exportGradesCSV(displayedScripts, `grades_${new Date().toISOString().split('T')[0]}.csv`);
+                                    showToast.success(`Exported ${displayedScripts.length} grades to CSV`);
+                                }}
+                                className="btn btn-secondary"
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+                            >
+                                <Download size={16} /> Export CSV
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
+
+            {stats.total > 0 && (
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+                    {[
+                        { label: 'Papers', value: stats.total, color: 'var(--text-main)' },
+                        { label: 'Evaluated', value: stats.evaluated, color: 'var(--success)' },
+                        { label: 'Needs Review', value: stats.needsReview, color: 'var(--danger)' },
+                        { label: 'Pending', value: stats.pending, color: 'var(--warning)' },
+                        ...(avgPct != null ? [{ label: 'Avg Score', value: `${avgPct}%`, color: scoreColor(avgPct) }] : []),
+                    ].map(st => (
+                        <div key={st.label} style={{ flex: '1 1 120px', minWidth: '110px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '0.75rem 1rem' }}>
+                            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: st.color }}>{st.value}</div>
+                            <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.03em' }}>{st.label}</div>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {displayedScripts.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)', background: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px dashed var(--border)' }}>
@@ -534,79 +739,47 @@ function Dashboard() {
                     )}
                 </div>
             ) : (
-                <div className="scripts-grid">
-                    {displayedScripts.map(script => (
-                        <div key={script.id} className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-                                <div>
-                                    <h4 style={{ margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                        Student: {script.student_id}
-                                    </h4>
-                                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-                                        <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'var(--primary-light)', color: 'var(--primary)', borderRadius: '12px', fontWeight: 600 }}>{script.grade || 'No Grade'}</span>
-                                        <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'var(--surface)', color: 'var(--text-main)', borderRadius: '12px', fontWeight: 600, border: '1px solid var(--border)' }}>{script.subject || 'No Subject'}</span>
-                                        <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'var(--border)', color: 'var(--text-main)', borderRadius: '12px', fontWeight: 600 }}>{script.exam || 'No Exam'}</span>
-                                    </div>
-                                    <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', margin: 0 }}>{script.filename}</p>
+                <div>
+                    {groups.map(group => {
+                        const collapsed = collapsedGroups[group.key];
+                        return (
+                            <div key={group.key} style={{ marginBottom: '1.25rem' }}>
+                                <div className="mn-group-head" onClick={() => toggleGroup(group.key)}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: collapsed ? '12px' : '12px 12px 0 0', userSelect: 'none' }}>
+                                    {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                                    <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>{group.key}</span>
+                                    <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                                        {group.items.length} paper{group.items.length !== 1 ? 's' : ''}
+                                    </span>
+                                    {group.avg != null && (
+                                        <span style={{ marginLeft: 'auto', fontSize: '0.82rem', fontWeight: 700, color: scoreColor(group.avg) }}>avg {group.avg}%</span>
+                                    )}
                                 </div>
-                                <span className={`badge ${getBadgeClass(script.status)}`}>
-                                    {script.status}
-                                </span>
-                            </div>
 
-                            <div style={{ marginTop: 'auto', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
-                                {script.status === 'Pending' ? (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <p style={{ margin: 0, color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 500 }}>
-                                            <AlertTriangle size={18} /> AI is evaluating...
-                                        </p>
-                                        {viewMode === 'active' && (
-                                            <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0.3rem 0.6rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
-                                                <Trash2 size={16} />
-                                            </button>
-                                        )}
+                                {!collapsed && (displayMode === 'cards' ? (
+                                    <div className="scripts-grid" style={{ marginTop: '1rem' }}>
+                                        {group.items.map(renderCard)}
                                     </div>
                                 ) : (
-                                    <div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                                            <span style={{ color: 'var(--text-muted)' }}>Score:</span>
-                                            <strong style={{ fontSize: '1.2rem', color: 'var(--primary)' }}>{script.total_marks}/{script.max_marks || 10}</strong>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                            <span style={{ color: 'var(--text-muted)' }}>Confidence:</span>
-                                            <strong style={{ color: script.confidence_score < 75 ? 'var(--danger)' : 'var(--success)' }}>
-                                                {script.confidence_score}%
-                                            </strong>
-                                        </div>
-
-                                        {viewMode === 'deleted' ? (
-                                            <button onClick={() => handleRestore(script.id)} className="btn btn-success" style={{ width: '100%', background: 'var(--success)', color: 'white', border: 'none' }}>
-                                                <RefreshCcw size={18} /> Restore Script
-                                            </button>
-                                        ) : (
-                                            <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                                {script.status === 'Needs Review' ? (
-                                                    <Link to={`/review/${script.id}`} className="btn btn-secondary" style={{ flex: 1, borderColor: 'var(--danger)', color: 'var(--danger)' }}>
-                                                        <AlertTriangle size={18} /> Review Required
-                                                    </Link>
-                                                ) : (
-                                                    <Link to={`/report/${script.id}`} className="btn btn-primary" style={{ flex: 1 }}>
-                                                        <CheckCircle size={18} /> View Report
-                                                    </Link>
-                                                )}
-                                                <button onClick={() => handleRegrade(script.id)} className="btn btn-secondary" style={{ padding: '0 0.8rem' }} title="Re-grade">
-                                                    <RefreshCcw size={18} />
-                                                </button>
-                                                <button onClick={() => handleDelete(script.id)} className="btn btn-secondary" style={{ padding: '0 0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }} title="Delete">
-                                                    <Trash2 size={18} />
-                                                </button>
-                                            </div>
-                                        )}
+                                    <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 12px 12px' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                            <thead>
+                                                <tr style={{ background: 'var(--surface)', textAlign: 'left' }}>
+                                                    {['Student', 'Score', 'Confidence', 'Status', 'File'].map(h => (
+                                                        <th key={h} style={{ ...cellStyle, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-muted)', fontWeight: 700 }}>{h}</th>
+                                                    ))}
+                                                    <th style={{ ...cellStyle, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-muted)', fontWeight: 700, textAlign: 'right' }}>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {group.items.map(renderRow)}
+                                            </tbody>
+                                        </table>
                                     </div>
-                                )}
+                                ))}
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>

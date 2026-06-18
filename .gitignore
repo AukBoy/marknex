@@ -18,8 +18,19 @@ backend/marknex.db-shm
 *.sqlite-shm
 backend/uploads/
 
-# Generated report (binary doc, not source)
+# Generated reports & DB exports — contain REAL student PII / password hashes.
+# The GitHub repo is PUBLIC, so these must never be committed.
 MarkNex_System_Report.doc
+MarkNex_Database_Report.docx
+MarkNex_Database_Report.pdf
+db-report-data.json
+db-report-preview.png
+db-screenshots/
+# Local one-off report generators (reference the live DB; not part of the app)
+backend/gather-db-report.js
+backend/build-db-report.js
+backend/build-db-pdf.js
+backend/build-db-screenshots.js
 
 # Scratch / debug output
 backend/out.json

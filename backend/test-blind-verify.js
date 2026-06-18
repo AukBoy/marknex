@@ -1,7 +1,7 @@
 // Unit test for blind-read verification logic (the 136/126 false-positive catch).
 // Tests the pure functions directly so we don't depend on GPT-4o's non-deterministic OCR.
 const assert = require('assert');
-const { parseTranscriptionAnswers, applyBlindVerification } = require('./server');
+const { parseTranscriptionAnswers, applyBlindVerification, flagUnreadableFinalAnswers } = require('./server');
 
 let passed = 0, failed = 0;
 function check(name, fn) {
@@ -58,6 +58,43 @@ check('does NOT flip when transcription did NOT match correct (not the bias sign
     const qa = [{ q_num: 'Q5', status: 'Correct', marks_awarded: 1, max_marks: 1, teacher_tip: '' }];
     const flips = applyBlindVerification(qa, { '5': '136' }, t, [], '[Test]');
     assert.strictEqual(flips, 0);
+});
+
+console.log('flagUnreadableFinalAnswers:');
+// Q1 from script 196: working read correctly (8734) but final-answer box garbled to 8738734.
+const garbledTranscription =
+`Q01: 4768 + 3986 → Student working: 4768\n+3986\n8734 → Final answer: 8738734
+Q02: 157 + 1926 → Student working: 157\n+1926\n2083 → Final answer: 2083`;
+
+check('FLAGS Q1 when final answer is impossibly long (8738734 for a sum)', () => {
+    const qa = [
+        { q_num: 'Q1', status: 'Incorrect', marks_awarded: 0, teacher_tip: 'Printed: 4768 + 3986. Correct answer: 8754. Student wrote: 8738734.' },
+        { q_num: 'Q2', status: 'Correct', marks_awarded: 1, teacher_tip: '' },
+    ];
+    const flagged = flagUnreadableFinalAnswers(qa, garbledTranscription, '[Test]');
+    assert.deepStrictEqual(flagged, ['1'], 'only Q1 flagged');
+    assert.strictEqual(qa[0].flagged_unreadable, true, 'Q1 marked flagged');
+    assert.ok(/working suggests "8734"/i.test(qa[0].teacher_tip), 'tip surfaces the plausible working value 8734');
+    assert.ok(/couldn't be read reliably/i.test(qa[0].teacher_tip), 'tip explains the box was unreadable');
+    assert.ok(!/Student wrote: 8738734/i.test(qa[0].teacher_tip), 'garbage no longer presented as a confident "student wrote" value');
+});
+check('does NOT flag a plausible (correct-length) final answer', () => {
+    const qa = [{ q_num: 'Q2', status: 'Correct', marks_awarded: 1, teacher_tip: '' }];
+    const flagged = flagUnreadableFinalAnswers(qa, garbledTranscription, '[Test]');
+    assert.strictEqual(flagged.length, 0);
+});
+check('does NOT flag MCQ-style letter answers', () => {
+    const t = `Q01: Capital of France → Student working: thinking → Final answer: B`;
+    const qa = [{ q_num: 'Q1', status: 'Correct', marks_awarded: 1, teacher_tip: '' }];
+    const flagged = flagUnreadableFinalAnswers(qa, t, '[Test]');
+    assert.strictEqual(flagged.length, 0);
+});
+check('does NOT flag when final answer is just 1 digit longer (off-by-one tolerance)', () => {
+    // correct 126 (3 digits); final "1263" (4 digits) — within tolerance, not flagged.
+    const t = `Q05: 42 x 3 → Student working: 42\n×3\n126 → Final answer: 1263`;
+    const qa = [{ q_num: 'Q5', status: 'Incorrect', marks_awarded: 0, teacher_tip: '' }];
+    const flagged = flagUnreadableFinalAnswers(qa, t, '[Test]');
+    assert.strictEqual(flagged.length, 0);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

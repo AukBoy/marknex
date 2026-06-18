@@ -641,6 +641,14 @@ function parseTranscriptionAnswers(transcription) {
         const qNum = qMatch[1];
         const faMatch = block.match(/Final answer:\s*([^\n]+)/i);
         const finalAnswer = faMatch ? faMatch[1].trim() : null;
+        // Last numeric token in the working area (between "Student working:" and
+        // the final-answer box) — used to sanity-check a garbled final answer.
+        const workMatch = block.match(/Student working:\s*([\s\S]*?)(?:Final answer:|$)/i);
+        let workingLast = null;
+        if (workMatch) {
+            const nums = workMatch[1].match(/-?\d[\d.]*/g);
+            if (nums && nums.length) workingLast = nums[nums.length - 1];
+        }
         const opMatch = block.match(/(\d[\d.]*)\s*([+\-−–×÷xX*\/])\s*(\d[\d.]*)/);
         let correct = null;
         if (opMatch) {
@@ -651,7 +659,7 @@ function parseTranscriptionAnswers(transcription) {
             else if (op === '÷' || op === '/') correct = b !== 0 ? a / b : null;
             if (correct !== null) correct = Math.round(correct * 100) / 100;
         }
-        map[qNum] = { finalAnswer, correct };
+        map[qNum] = { finalAnswer, correct, workingLast };
     }
     return map;
 }
@@ -689,6 +697,42 @@ function applyBlindVerification(questionAnalysis, blindAnswers, transcription, c
         }
     }
     return flips;
+}
+
+// Sanity-guard the OCR of the final-answer box. A handwritten box is often
+// messy / struck-through and can be read as garbage (e.g. "8738734" for a sum
+// that can only ever reach 5 digits). When the final answer is mathematically
+// impossible for the printed question, we don't trust it: rewrite the tip to
+// show the plausible value from the working, and return the flagged q_nums so
+// the caller can force the paper to "Needs Review" for a human to eyeball.
+function flagUnreadableFinalAnswers(questionAnalysis, transcription, tag) {
+    if (!Array.isArray(questionAnalysis)) return [];
+    const parsed = parseTranscriptionAnswers(transcription);
+    const flagged = [];
+    for (const q of questionAnalysis) {
+        const qKey = (q.q_num || '').replace(/^Q0*/i, '');
+        const info = parsed[qKey];
+        if (!info || info.correct === null || !info.finalAnswer) continue;
+        const finalDigits = info.finalAnswer.replace(/[^0-9]/g, '');
+        if (!finalDigits) continue; // non-numeric (e.g. MCQ "B") — not our case
+        const correctDigits = String(Math.abs(Math.round(info.correct)));
+        // Impossible: far more digits than the operation can ever produce.
+        if (finalDigits.length > correctDigits.length + 1) {
+            let plausible = info.workingLast ? info.workingLast.replace(/[^0-9.\-]/g, '') : null;
+            // Only surface the working value if it's a plausible candidate (similar
+            // magnitude to the correct answer); otherwise it's a stray token from the
+            // working (e.g. a division remainder "0") and would only mislead.
+            const plausibleDigits = plausible ? plausible.replace(/[^0-9]/g, '') : '';
+            if (!plausibleDigits || Math.abs(plausibleDigits.length - correctDigits.length) > 1) plausible = null;
+            q.flagged_unreadable = true;
+            q.teacher_tip = `⚠ The final-answer box couldn't be read reliably (OCR returned "${info.finalAnswer}", which is impossible for this question).` +
+                (plausible ? ` The student's working suggests "${plausible}".` : '') +
+                ` The correct answer is ${info.correct}. Flagged for your review — please check the original paper.`;
+            flagged.push(qKey);
+            console.log(`${tag} Q${qKey}: final="${info.finalAnswer}" implausible vs correct=${info.correct} → flagged for review`);
+        }
+    }
+    return flagged;
 }
 
 // Blind verification: re-read ONLY the student's final answers without seeing
@@ -1066,7 +1110,11 @@ const verifyToken = (req, res, next) => {
             next();
         });
     } catch (err) {
-        res.status(400).json({ error: 'Invalid Token' });
+        // A token that won't verify (bad signature, malformed, or expired) is a
+        // 401 — not a 400. Returning 401 lets the frontend interceptor clear the
+        // stale token and redirect to login, instead of leaving the user stuck
+        // on a cryptic "Invalid Token" with no way forward.
+        res.status(401).json({ error: 'Invalid or expired session. Please sign in again.' });
     }
 };
 
@@ -1127,7 +1175,7 @@ app.post('/api/auth/reset-password', authRateLimit, async (req, res) => {
 
 // Health check — reports which database engine is live (verifies Postgres).
 app.get('/api/health', (req, res) => {
-    res.json({ ok: true, db: process.env.DATABASE_URL ? 'postgres' : 'sqlite', version: 'v3-blind-read' });
+    res.json({ ok: true, db: process.env.DATABASE_URL ? 'postgres' : 'sqlite', version: 'v4-final-guard' });
 });
 
 // 2. Login. The `portal` field ('teacher' | 'student') tells us which account
@@ -1729,6 +1777,17 @@ Return ONLY raw JSON. No markdown.`;
                             } catch (bErr) { console.warn('[BlindVerify] Error:', bErr.message); }
                         }
 
+                        // ── Final-answer sanity guard ───────────────────────
+                        // Flag questions whose final-answer box was read as an
+                        // impossible value (garbled OCR) so the paper goes to
+                        // Needs Review instead of presenting garbage as fact.
+                        let unreadableFlags = [];
+                        if (!isMCQ) {
+                            unreadableFlags = flagUnreadableFinalAnswers(
+                                aiData.question_analysis, aiData._transcription, '[FinalGuard]'
+                            );
+                        }
+
                         // Fallback consistency check for non-math: catch corrections
                         // where text === correct_answer (AI contradicts itself)
                         if (!isMCQ && Array.isArray(aiData.question_analysis)) {
@@ -1794,8 +1853,11 @@ Return ONLY raw JSON. No markdown.`;
                              ) AS value`,
                             [req.user.id], (err, row) => {
                             const threshold = row ? parseFloat(row.value) : 75;
-                            const status = score < threshold ? 'Needs Review' : 'Evaluated';
-                            const flags = score < threshold ? 'Low Confidence' : 'AI Verified';
+                            const lowConf = score < threshold;
+                            // An unreadable final answer always needs a human, even
+                            // if overall confidence cleared the threshold.
+                            const status = (lowConf || unreadableFlags.length > 0) ? 'Needs Review' : 'Evaluated';
+                            const flags = unreadableFlags.length > 0 ? 'Unclear Answer' : (lowConf ? 'Low Confidence' : 'AI Verified');
                             db.run(
                                 `UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?, confidence_score = ?, flags = ?, report = ?, corrections = ?, question_analysis = ?, ai_total_marks = ?, ai_confidence = ?, transcription = ? WHERE id = ?`,
                                 [status, aiData.total_marks, maxTotalMarks, score, flags, aiData.report, correctionsStr, questionAnalysisStr, aiData.total_marks, score, aiData._transcription || null, scriptId]
@@ -2315,6 +2377,11 @@ Return ONLY raw JSON. No markdown.`;
                     } catch (bErr) { console.warn('[ReGrade BlindVerify] Error:', bErr.message); }
                 }
 
+                // ── Final-answer sanity guard (see upload flow) ──────────────
+                const unreadableFlags = flagUnreadableFinalAnswers(
+                    aiData.question_analysis, transcription, '[ReGrade FinalGuard]'
+                );
+
                 // ── Sanity checks ─────────────────────────────
                 if (Array.isArray(aiData.question_analysis)) {
                     const marksPerQ = Math.round(maxTotalMarks / (aiData.question_analysis.length || 1));
@@ -2339,8 +2406,9 @@ Return ONLY raw JSON. No markdown.`;
                     (SELECT value FROM settings WHERE key = 'confidence_threshold'), '75') AS value`,
                     [req.user.id], (err, row) => {
                     const threshold = row ? parseFloat(row.value) : 75;
-                    const status = score < threshold ? 'Needs Review' : 'Evaluated';
-                    const flags = score < threshold ? 'Low Confidence' : 'AI Verified';
+                    const lowConf = score < threshold;
+                    const status = (lowConf || unreadableFlags.length > 0) ? 'Needs Review' : 'Evaluated';
+                    const flags = unreadableFlags.length > 0 ? 'Unclear Answer' : (lowConf ? 'Low Confidence' : 'AI Verified');
                     db.run(`UPDATE scripts SET status = ?, total_marks = ?, max_marks = ?, confidence_score = ?, flags = ?, report = ?, corrections = ?, question_analysis = ?, ai_total_marks = ?, ai_confidence = ?, transcription = ? WHERE id = ?`,
                         [status, aiData.total_marks, maxTotalMarks, score, flags, aiData.report, correctionsStr, questionAnalysisStr, aiData.total_marks, score, transcription || null, scriptId]);
                 });
@@ -3611,7 +3679,7 @@ if (fs.existsSync(distPath)) {
 
 // Export pure grading helpers for unit testing. Only starts the HTTP server
 // when run directly (node server.js), not when required by a test.
-module.exports = { parseTranscriptionAnswers, applyBlindVerification };
+module.exports = { parseTranscriptionAnswers, applyBlindVerification, flagUnreadableFinalAnswers };
 
 if (require.main === module)
 app.listen(PORT, async () => {

@@ -127,7 +127,12 @@ function Settings() {
                 setTimeout(() => { btn.innerText = old; }, 2000);
             }
         } catch (err) {
-            alert('Failed to save settings');
+            // Distinguish "server unreachable" from a real server-side error so
+            // the teacher knows whether to start the server or report a bug.
+            const msg = err.response
+                ? `Failed to save settings: ${err.response.data?.error || err.response.status}`
+                : 'Could not reach the server. Make sure it is running, then try again.';
+            alert(msg);
         } finally {
             setSaving(false);
         }
